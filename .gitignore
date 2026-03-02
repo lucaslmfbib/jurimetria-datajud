@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# Streamlit/local config
+.streamlit/secrets.toml
+
+# Environment / secrets
+.env
+.env.*
+
+# Generated outputs
+*.csv
+*.jpg
+*.jpeg
+*.png
+*.log
+movimentos_*.txt
+top_100_*.txt
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
