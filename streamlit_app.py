@@ -1,9 +1,9 @@
 import io
+import importlib
 import os
 import time
 from typing import Any
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 from requests import HTTPError
@@ -11,6 +11,13 @@ import streamlit as st
 
 URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
 URL_TEMPLATE = "https://api-publica.datajud.cnj.jus.br/api_publica_{tribunal}/_search"
+
+
+@st.cache_resource(show_spinner=False)
+def get_plt() -> Any:
+    # Evita custo de import no boot inicial do app.
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
+    return importlib.import_module("matplotlib.pyplot")
 
 
 def normalize_api_key(raw_key: str) -> str:
@@ -68,6 +75,7 @@ def parse_movimentos(movimentos: Any) -> list[list[Any]]:
     return parsed
 
 
+@st.cache_data(show_spinner=False, ttl=1200)
 def fetch_hits(
     api_key: str,
     classe_codigo: int,
@@ -97,6 +105,7 @@ def fetch_hits(
     return data.get("hits", {}).get("hits", [])
 
 
+@st.cache_data(show_spinner=False, ttl=1200)
 def hits_to_dataframe(hits: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[list[Any]] = []
 
@@ -232,7 +241,8 @@ def dataframe_for_display(df_anpp: pd.DataFrame) -> pd.DataFrame:
     return df_view.drop(columns=["movimentos", "sort"], errors="ignore")
 
 
-def fig_horario(df_anpp: pd.DataFrame) -> plt.Figure:
+def fig_horario(df_anpp: pd.DataFrame) -> Any:
+    plt = get_plt()
     contagem = df_anpp["data_ajuizamento"].dt.hour.value_counts().sort_index()
     fig, ax = plt.subplots(figsize=(10, 4))
     contagem.plot(kind="bar", color="skyblue", ax=ax)
@@ -243,7 +253,8 @@ def fig_horario(df_anpp: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def fig_pizza(df_anpp: pd.DataFrame) -> plt.Figure:
+def fig_pizza(df_anpp: pd.DataFrame) -> Any:
+    plt = get_plt()
     contagem = df_anpp["data_ajuizamento"].dt.hour.value_counts().sort_index()
     ajuizamentos_expediente = contagem[8:19].sum()
     ajuizamentos_fora = contagem[0:8].sum() + contagem[19:].sum()
@@ -266,7 +277,8 @@ def fig_pizza(df_anpp: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def fig_mensal(df_anpp: pd.DataFrame) -> plt.Figure:
+def fig_mensal(df_anpp: pd.DataFrame) -> Any:
+    plt = get_plt()
     max_meses = 12
     df_resampled = monthly_counts(df_anpp, max_meses=max_meses)
     if df_resampled.empty:
@@ -300,7 +312,8 @@ def fig_mensal(df_anpp: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def fig_fluxo_mensal(df_anpp: pd.DataFrame, max_meses: int = 12) -> plt.Figure:
+def fig_fluxo_mensal(df_anpp: pd.DataFrame, max_meses: int = 12) -> Any:
+    plt = get_plt()
     ajuizados = _month_counts_from_series(df_anpp["data_ajuizamento"], max_meses=max_meses)
     atualizados = _month_counts_from_series(df_anpp["ultima_atualizacao"], max_meses=max_meses)
 
@@ -347,7 +360,8 @@ def fig_fluxo_mensal(df_anpp: pd.DataFrame, max_meses: int = 12) -> plt.Figure:
     return fig
 
 
-def fig_tempo_tramitacao_boxplot(df_anpp: pd.DataFrame, max_orgaos: int = 8) -> plt.Figure:
+def fig_tempo_tramitacao_boxplot(df_anpp: pd.DataFrame, max_orgaos: int = 8) -> Any:
+    plt = get_plt()
     base = df_anpp[["orgao_julgador", "data_ajuizamento", "ultima_atualizacao"]].dropna()
     if base.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
@@ -407,7 +421,8 @@ def fig_tempo_tramitacao_boxplot(df_anpp: pd.DataFrame, max_orgaos: int = 8) -> 
     return fig
 
 
-def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> plt.Figure:
+def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> Any:
+    plt = get_plt()
     datas = df_anpp["data_ajuizamento"].dropna()
     if datas.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
@@ -433,6 +448,7 @@ def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> plt.Figure:
 
 
 def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
+    plt = get_plt()
     df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
 
     with open("movimentos_datajud.txt", "w") as file:
