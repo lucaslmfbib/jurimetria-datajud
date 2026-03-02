@@ -35,7 +35,7 @@ def normalize_numero_processo(raw_numero: str) -> str:
     return somente_digitos or numero
 
 
-def to_sao_paulo_datetime(value: Any) -> pd.Timestamp | pd.NaT:
+def to_sao_paulo_datetime(value: Any) -> Any:
     if value is None or value == "":
         return pd.NaT
     return pd.to_datetime(value, utc=True, errors="coerce").tz_convert("America/Sao_Paulo")
