@@ -92,6 +92,7 @@ def fetch_hits(
     size: int,
     url: str,
     numero_processo: str = "",
+    incluir_movimentos: bool = False,
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
     if numero_limpo:
@@ -99,8 +100,23 @@ def fetch_hits(
     else:
         query = {"match": {"classe.codigo": classe_codigo}}
 
+    campos_source = [
+        "numeroProcesso",
+        "classe.nome",
+        "dataAjuizamento",
+        "dataHoraUltimaAtualizacao",
+        "formato",
+        "orgaoJulgador.nome",
+        "orgaoJulgador.codigoMunicipioIBGE",
+        "grau",
+        "assuntos",
+    ]
+    if incluir_movimentos:
+        campos_source.append("movimentos")
+
     payload = {
         "size": size,
+        "_source": campos_source,
         "query": query,
         "sort": [{"dataAjuizamento": {"order": "desc"}}],
     }
@@ -116,7 +132,7 @@ def fetch_hits(
 
 
 @st.cache_data(show_spinner=False, ttl=1200)
-def hits_to_dataframe(hits: list[dict[str, Any]]) -> pd.DataFrame:
+def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = False) -> pd.DataFrame:
     rows: list[list[Any]] = []
 
     for hit in hits:
@@ -127,6 +143,12 @@ def hits_to_dataframe(hits: list[dict[str, Any]]) -> pd.DataFrame:
             if isinstance(source.get("orgaoJulgador"), dict)
             else {}
         )
+
+        movimentos_raw = source.get("movimentos", [])
+        if processar_movimentos:
+            movimentos_valor = movimentos_raw if isinstance(movimentos_raw, list) else []
+        else:
+            movimentos_valor = len(movimentos_raw) if isinstance(movimentos_raw, list) else 0
 
         rows.append(
             [
@@ -140,7 +162,7 @@ def hits_to_dataframe(hits: list[dict[str, Any]]) -> pd.DataFrame:
                 orgao.get("codigoMunicipioIBGE"),
                 source.get("grau"),
                 source.get("assuntos", []),
-                source.get("movimentos", []),
+                movimentos_valor,
                 hit.get("sort") if isinstance(hit, dict) else None,
             ]
         )
@@ -165,10 +187,13 @@ def hits_to_dataframe(hits: list[dict[str, Any]]) -> pd.DataFrame:
         return df
 
     df["assuntos"] = df["assuntos"].apply(parse_assuntos)
-    df["movimentos"] = df["movimentos"].apply(parse_movimentos)
-    df["movimentos"] = df["movimentos"].apply(
-        lambda x: sorted(x, key=lambda tup: tup[2] if len(tup) > 2 else pd.NaT, reverse=True)
-    )
+    if processar_movimentos:
+        df["movimentos"] = df["movimentos"].apply(parse_movimentos)
+        df["movimentos"] = df["movimentos"].apply(
+            lambda x: sorted(x, key=lambda tup: tup[2] if len(tup) > 2 else pd.NaT, reverse=True)
+        )
+    else:
+        df["movimentos"] = pd.to_numeric(df["movimentos"], errors="coerce").fillna(0).astype(int)
     df["data_ajuizamento"] = df["data_ajuizamento"].apply(to_sao_paulo_datetime)
     df["ultima_atualizacao"] = df["ultima_atualizacao"].apply(to_sao_paulo_datetime)
     return df
@@ -235,19 +260,25 @@ def top_100_to_dataframe(top_100: pd.Series) -> pd.DataFrame:
     return top_100_df
 
 
-def dataframe_for_display(df_anpp: pd.DataFrame) -> pd.DataFrame:
+def dataframe_for_display(df_anpp: pd.DataFrame, max_rows: int = 400) -> pd.DataFrame:
     if df_anpp.empty:
         return df_anpp
 
-    df_view = df_anpp.copy()
+    def movimentos_count(value: Any) -> int:
+        if isinstance(value, list):
+            return len(value)
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    df_view = df_anpp.head(max_rows).copy()
     df_view["assuntos"] = df_view["assuntos"].apply(
         lambda x: ", ".join(x[:3]) + (" ..." if len(x) > 3 else "")
         if isinstance(x, list)
         else ""
     )
-    df_view["qtd_movimentos"] = df_view["movimentos"].apply(
-        lambda x: len(x) if isinstance(x, list) else 0
-    )
+    df_view["qtd_movimentos"] = df_view["movimentos"].apply(movimentos_count)
     return df_view.drop(columns=["movimentos", "sort"], errors="ignore")
 
 
@@ -525,13 +556,28 @@ def render() -> None:
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
         )
         st.caption("Ao buscar por numero do processo, selecione o tribunal correto.")
-        size = st.number_input("Quantidade", min_value=1, max_value=10000, value=2000, step=100)
+        modo_rapido = st.checkbox(
+            "Modo rapido (recomendado)",
+            value=True,
+            help="Reduz processamento interno para acelerar a resposta.",
+        )
+        ampliar_historico = st.checkbox(
+            "Ampliar historico mensal automaticamente (mais lento)",
+            value=False,
+            help="Faz nova consulta com 10.000 registros para tentar preencher 12 meses no grafico mensal.",
+        )
+        mostrar_graficos_avancados = st.checkbox(
+            "Exibir graficos avancados (mais lento)",
+            value=False,
+            help="Ative para ver fluxo mensal, tempo de tramitacao e heatmap.",
+        )
+        size = st.number_input("Quantidade", min_value=1, max_value=10000, value=700, step=100)
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         st.caption(f"URL usada: {url}")
         executar = st.button("Executar consulta", use_container_width=True)
-        if size > 3000:
-            st.warning("Consultas acima de 3000 podem ficar lentas.")
+        if size > 2000:
+            st.warning("Consultas acima de 2000 podem ficar lentas.")
 
     if executar:
         if not api_key:
@@ -547,13 +593,14 @@ def render() -> None:
                     size=int(size),
                     url=url,
                     numero_processo=numero_processo,
+                    incluir_movimentos=not modo_rapido,
                 )
-                df_anpp = hits_to_dataframe(hits)
+                df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 top_100 = build_top_100(df_anpp)
 
                 # Se a amostra vier curta para histórico mensal, tenta ampliar só para o gráfico.
                 df_mensal = df_anpp
-                if not numero_processo.strip() and int(size) < 10000:
+                if ampliar_historico and not numero_processo.strip() and int(size) < 10000:
                     meses_base = len(monthly_counts(df_anpp, max_meses=12))
                     if meses_base < 12:
                         try:
@@ -563,8 +610,9 @@ def render() -> None:
                                 size=10000,
                                 url=url,
                                 numero_processo="",
+                                incluir_movimentos=False,
                             )
-                            df_mensal_candidato = hits_to_dataframe(hits_mensal)
+                            df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
                             meses_candidato = len(monthly_counts(df_mensal_candidato, max_meses=12))
                             if meses_candidato > meses_base:
                                 df_mensal = df_mensal_candidato
@@ -601,7 +649,7 @@ def render() -> None:
     df_anpp = st.session_state["df_anpp"]
     df_mensal = st.session_state.get("df_mensal", df_anpp)
     top_100 = st.session_state["top_100"]
-    df_view = dataframe_for_display(df_anpp)
+    df_view = dataframe_for_display(df_anpp, max_rows=400)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
         if "assuntos" in df_anpp.columns
@@ -615,8 +663,8 @@ def render() -> None:
     c3.metric("Orgaos julgadores", str(df_anpp["orgao_julgador"].nunique()))
 
     st.subheader("Tabela")
-    st.caption("Tabela simplificada (colunas pesadas removidas) para evitar travamento.")
-    st.dataframe(df_view.head(1000), use_container_width=True, height=350)
+    st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
+    st.dataframe(df_view, use_container_width=True, height=350)
 
     st.subheader("Top 100 por municipio e orgao julgador")
     top_100_df = top_100_to_dataframe(top_100)
@@ -633,15 +681,18 @@ def render() -> None:
     st.subheader("Ajuizamentos mensais")
     st.pyplot(fig_mensal(df_mensal), clear_figure=True)
 
-    st.subheader("Fluxo mensal")
-    st.caption("Atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
-    st.pyplot(fig_fluxo_mensal(df_mensal), clear_figure=True)
+    if mostrar_graficos_avancados:
+        st.subheader("Fluxo mensal")
+        st.caption("Atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
+        st.pyplot(fig_fluxo_mensal(df_mensal), clear_figure=True)
 
-    st.subheader("Tempo de tramitacao por orgao")
-    st.pyplot(fig_tempo_tramitacao_boxplot(df_anpp), clear_figure=True)
+        st.subheader("Tempo de tramitacao por orgao")
+        st.pyplot(fig_tempo_tramitacao_boxplot(df_anpp), clear_figure=True)
 
-    st.subheader("Heatmap dia x hora")
-    st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
+        st.subheader("Heatmap dia x hora")
+        st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
+    else:
+        st.caption("Graficos avancados ocultos para resposta mais rapida. Ative na barra lateral.")
 
     st.subheader("Downloads")
     csv_bytes = df_anpp.to_csv(index=False).encode("utf-8")
