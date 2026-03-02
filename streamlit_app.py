@@ -20,6 +20,16 @@ def get_plt() -> Any:
     return importlib.import_module("matplotlib.pyplot")
 
 
+def resolve_api_key() -> str:
+    key_secret = ""
+    try:
+        key_secret = str(st.secrets.get("DATAJUD_API_KEY", "")).strip()
+    except Exception:
+        key_secret = ""
+    key_env = os.getenv("DATAJUD_API_KEY", "").strip()
+    return key_secret or key_env
+
+
 def normalize_api_key(raw_key: str) -> str:
     key = (raw_key or "").strip().strip("\"'")
     if key.lower().startswith("authorization:"):
@@ -492,18 +502,15 @@ def render() -> None:
         "LinkedIn: [lucaslmf](https://www.linkedin.com/in/lucaslmf/) | "
         "Instagram: [@lucaslmf_](https://www.instagram.com/lucaslmf_/)"
     )
-    api_key_env = os.getenv("DATAJUD_API_KEY", "").strip()
+    api_key = resolve_api_key()
 
     with st.sidebar:
         st.header("Configuracao")
-        if api_key_env:
-            st.caption("DATAJUD_API_KEY detectada. O campo de chave pode ficar vazio.")
-        api_key_input = st.text_input(
-            "API Key",
-            type="password",
-            help="Use formato: APIKey ...",
-            placeholder="APIKey ...",
-        )
+        if api_key:
+            st.success("API Key configurada no servidor.")
+        else:
+            st.error("API Key nao configurada no servidor.")
+            st.caption("Configure DATAJUD_API_KEY em Streamlit Secrets (ou variavel de ambiente local).")
         st.markdown(
             "[Onde obter API Key (DataJud Wiki)](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
         )
@@ -526,11 +533,9 @@ def render() -> None:
         if size > 3000:
             st.warning("Consultas acima de 3000 podem ficar lentas.")
 
-    api_key = api_key_input.strip() or api_key_env
-
     if executar:
         if not api_key:
-            st.error("Informe a API Key no campo ou defina DATAJUD_API_KEY.")
+            st.error("API Key ausente. Configure DATAJUD_API_KEY no servidor.")
             return
 
         with st.spinner("Buscando dados no DataJud..."):
