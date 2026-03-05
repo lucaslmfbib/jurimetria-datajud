@@ -28,6 +28,18 @@ streamlit run streamlit_app.py --server.port 8520
 Acesso:
 - `http://127.0.0.1:8520`
 
+## Google Colab
+- Notebook pronto: `jurimetria_datajud_colab.ipynb`
+- Abrir no Colab:
+  - https://colab.research.google.com/github/lucaslmfbib/jurimetria-datajud/blob/main/jurimetria_datajud_colab.ipynb
+
+Passos no Colab:
+1. Abra o link acima.
+2. Execute a celula de instalacao (`pip`).
+3. Preencha `API_KEY` no formato `APIKey ...`.
+4. Ajuste `TRIBUNAL`, `CLASSE_CODIGO`, `NUMERO_PROCESSO` e `QUANTIDADE`.
+5. Rode as celulas de consulta e graficos.
+
 ## API Key DataJud
 No app, use a chave no formato `APIKey ...`.
 Tambem e possivel usar variavel de ambiente:
