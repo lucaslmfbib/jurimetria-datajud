@@ -13,6 +13,8 @@ URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
 URL_TEMPLATE = "https://api-publica.datajud.cnj.jus.br/api_publica_{tribunal}/_search"
 CNJ_SIGLAS_URL = "https://www.cnj.jus.br/poder-judiciario/tribunais/"
 CNJ_CLASSES_URL = "https://www.cnj.jus.br/sgt/consulta_publica_classes.php"
+MAX_PAGE_SIZE = 10000
+MAX_TOTAL_SIZE = 50000
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -333,10 +335,41 @@ def fetch_hits(
         "Content-Type": "application/json",
     }
 
-    response = requests.post(url, headers=headers, json=payload, timeout=120)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("hits", {}).get("hits", [])
+    if size <= MAX_PAGE_SIZE:
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("hits", {}).get("hits", [])
+
+    # Para consultas acima de 10.000 registros, usa paginação oficial com search_after.
+    all_hits: list[dict[str, Any]] = []
+    search_after: Any = None
+    sort = [{"id.keyword": {"order": "asc"}}]
+
+    while len(all_hits) < size:
+        page_size = min(MAX_PAGE_SIZE, size - len(all_hits))
+        paged_payload = {
+            "size": page_size,
+            "_source": campos_source,
+            "query": query,
+            "sort": sort,
+        }
+        if search_after is not None:
+            paged_payload["search_after"] = search_after
+
+        response = requests.post(url, headers=headers, json=paged_payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        page_hits = data.get("hits", {}).get("hits", [])
+        if not page_hits:
+            break
+
+        all_hits.extend(page_hits)
+        search_after = page_hits[-1].get("sort")
+        if not search_after or len(page_hits) < page_size:
+            break
+
+    return all_hits
 
 
 @st.cache_data(show_spinner=False, ttl=1200)
@@ -404,6 +437,11 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         df["movimentos"] = pd.to_numeric(df["movimentos"], errors="coerce").fillna(0).astype(int)
     df["data_ajuizamento"] = df["data_ajuizamento"].apply(to_sao_paulo_datetime)
     df["ultima_atualizacao"] = df["ultima_atualizacao"].apply(to_sao_paulo_datetime)
+    df = df.sort_values(
+        by=["data_ajuizamento", "numero_processo"],
+        ascending=[False, True],
+        na_position="last",
+    ).reset_index(drop=True)
     return df
 
 
@@ -785,7 +823,12 @@ def render() -> None:
             value=False,
             help="Ative para ver fluxo mensal, tempo de tramitacao e heatmap.",
         )
-        size = st.number_input("Quantidade", min_value=1, max_value=10000, value=700, step=100)
+        size = st.number_input("Quantidade", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
+        if size > MAX_PAGE_SIZE:
+            st.info(
+                "Acima de 10.000 registros, o app pagina automaticamente a consulta no DataJud. "
+                "Isso pode deixar a resposta mais lenta."
+            )
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         st.caption(f"URL usada: {url}")
