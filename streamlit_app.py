@@ -11,6 +11,100 @@ import streamlit as st
 
 URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
 URL_TEMPLATE = "https://api-publica.datajud.cnj.jus.br/api_publica_{tribunal}/_search"
+CNJ_SIGLAS_URL = "https://www.cnj.jus.br/poder-judiciario/tribunais/"
+CNJ_CLASSES_URL = "https://www.cnj.jus.br/sgt/consulta_publica_classes.php"
+
+CODIGOS_TJM = [
+    (11041, "Inquerito Policial Militar"),
+    (11030, "Processo Criminal - Militar"),
+    (279, "Inquerito Policial"),
+    (11955, "Cautelar Inominada Criminal"),
+    (325, "Conflito de Jurisdicao"),
+    (15423, "Revisao Judicial - Conselho de Justificacao"),
+    (120, "Mandado de Seguranca Civel"),
+]
+
+CODIGOS_TRT = [
+    (985, "Acao Trabalhista - Rito Ordinario"),
+    (1125, "Acao Trabalhista - Rito Sumarissimo"),
+    (1126, "Acao Trabalhista - Rito Sumario (Alcada)"),
+    (980, "Acao de Cumprimento"),
+    (986, "Inquerito para Apuracao de Falta Grave"),
+    (112, "Homologacao de Transacao Extrajudicial"),
+    (987, "Dissidio Coletivo"),
+    (988, "Dissidio Coletivo de Greve"),
+    (1202, "Reclamacao"),
+    (1009, "Recurso Ordinario Trabalhista"),
+]
+
+CODIGOS_TJ = [
+    (436, "Procedimento do Juizado Especial Civel"),
+    (14695, "Procedimento do Juizado Especial da Fazenda Publica"),
+    (156, "Cumprimento de Sentenca"),
+    (12154, "Execucao de Titulo Extrajudicial"),
+    (12079, "Execucao de Titulo Extrajudicial contra a Fazenda Publica"),
+    (1116, "Execucao Fiscal"),
+    (198, "Apelacao"),
+    (202, "Agravo de Instrumento"),
+    (1690, "Acao Civil Publica"),
+    (64, "Acao Civil de Improbidade Administrativa"),
+]
+
+CODIGOS_TRF = [
+    (156, "Cumprimento de Sentenca"),
+    (12154, "Execucao de Titulo Extrajudicial"),
+    (12079, "Execucao de Titulo Extrajudicial contra a Fazenda Publica"),
+    (1116, "Execucao Fiscal"),
+    (198, "Apelacao"),
+    (202, "Agravo de Instrumento"),
+    (199, "Reexame Necessario"),
+    (283, "Acao Penal - Procedimento Ordinario"),
+    (10943, "Acao Penal - Procedimento Sumario"),
+    (308, "Medidas Cautelares"),
+]
+
+CODIGOS_STJ = [
+    (15228, "Queixa-Crime"),
+    (11881, "Agravo em Recurso Especial"),
+    (1031, "Recurso Ordinario"),
+    (1044, "Agravo de Instrumento"),
+    (1670, "Acao de Improbidade Administrativa"),
+]
+
+CODIGOS_TST = [
+    (1008, "Recurso de Revista"),
+    (1002, "Agravo de Instrumento em Recurso de Revista"),
+    (11882, "Recurso de Revista com Agravo"),
+    (1009, "Recurso Ordinario Trabalhista"),
+    (1004, "Agravo de Peticao"),
+    (987, "Dissidio Coletivo"),
+    (988, "Dissidio Coletivo de Greve"),
+    (980, "Acao de Cumprimento"),
+    (1202, "Reclamacao"),
+    (976, "Acao Anulatoria de Clausulas Convencionais"),
+]
+
+CODIGOS_TSE = [
+    (11525, "Processos Civeis-Eleitorais"),
+    (11526, "Acao de Impugnacao de Mandato Eletivo"),
+    (11527, "Acao de Investigacao Judicial Eleitoral"),
+    (11528, "Acao Penal Eleitoral"),
+    (11533, "Recurso Contra Expedicao de Diploma"),
+    (11541, "Representacao"),
+    (11549, "Recurso Especial Eleitoral"),
+    (11550, "Recurso Ordinario"),
+]
+
+CODIGOS_CONSELHOS = [
+    (11887, "Acompanhamento de Cumprimento de Decisao"),
+    (1298, "Processo Administrativo"),
+    (1299, "Recurso Administrativo"),
+    (1308, "Sindicancia"),
+    (11892, "Revisao Disciplinar"),
+    (1301, "Reclamacao Disciplinar"),
+    (1264, "Processo Administrativo em Face de Magistrado"),
+    (1262, "Processo Administrativo em Face de Servidor"),
+]
 
 
 @st.cache_resource(show_spinner=False)
@@ -44,6 +138,120 @@ def normalize_api_key(raw_key: str) -> str:
 def build_url(tribunal_sigla: str) -> str:
     tribunal = (tribunal_sigla or "tjmg").strip().lower()
     return URL_TEMPLATE.format(tribunal=tribunal)
+
+
+def normalize_tribunal_sigla(raw_sigla: str) -> str:
+    return (raw_sigla or "").strip().lower()
+
+
+def get_codigo_sugestoes(tribunal_sigla: str) -> dict[str, Any]:
+    tribunal = normalize_tribunal_sigla(tribunal_sigla)
+    if tribunal in {"tjmmg", "tjmrs", "tjmsp"} or tribunal.startswith("tjm"):
+        return {
+            "categoria": "Tribunal de Justica Militar",
+            "titulo": f"Sugestoes para {tribunal or 'tjm'}",
+            "codigos": CODIGOS_TJM,
+            "observacao": "Base inicial util para TJMMG, TJMRS e TJMSP.",
+            "endpoint_publico": True,
+        }
+    if tribunal.startswith("trt"):
+        return {
+            "categoria": "Tribunal Regional do Trabalho",
+            "titulo": f"Sugestoes para {tribunal or 'trt'}",
+            "codigos": CODIGOS_TRT,
+            "observacao": "Base inicial util para TRT1 ate TRT24.",
+            "endpoint_publico": True,
+        }
+    if tribunal.startswith("trf"):
+        return {
+            "categoria": "Tribunal Regional Federal",
+            "titulo": f"Sugestoes para {tribunal or 'trf'}",
+            "codigos": CODIGOS_TRF,
+            "observacao": "Base inicial util para TRF1 ate TRF6.",
+            "endpoint_publico": True,
+        }
+    if tribunal in {"stj"}:
+        return {
+            "categoria": "Tribunal Superior",
+            "titulo": "Sugestoes para STJ",
+            "codigos": CODIGOS_STJ,
+            "observacao": "Use classes recursais e originarias do STJ.",
+            "endpoint_publico": True,
+        }
+    if tribunal in {"tst"}:
+        return {
+            "categoria": "Tribunal Superior",
+            "titulo": "Sugestoes para TST",
+            "codigos": CODIGOS_TST,
+            "observacao": "Base inicial util para consultas no TST.",
+            "endpoint_publico": True,
+        }
+    if tribunal in {"tse"}:
+        return {
+            "categoria": "Tribunal Superior",
+            "titulo": "Sugestoes para TSE",
+            "codigos": CODIGOS_TSE,
+            "observacao": "Base inicial util para processos civeis-eleitorais e recursos.",
+            "endpoint_publico": True,
+        }
+    if tribunal in {"stm"}:
+        return {
+            "categoria": "Tribunal Superior",
+            "titulo": "Sugestoes para STM",
+            "codigos": CODIGOS_TJM,
+            "observacao": "O STM compartilha a base militar para um teste inicial.",
+            "endpoint_publico": True,
+        }
+    if tribunal in {"cnj", "cjf", "csjt"}:
+        return {
+            "categoria": "Conselho",
+            "titulo": f"Sugestoes para {tribunal.upper()}",
+            "codigos": CODIGOS_CONSELHOS,
+            "observacao": "Predominam classes administrativas e disciplinares.",
+            "endpoint_publico": False,
+        }
+    if tribunal in {"stf"}:
+        return {
+            "categoria": "Tribunal Superior",
+            "titulo": "Sugestoes para STF",
+            "codigos": [],
+            "observacao": "O STF nao aparece na lista publica de endpoints do DataJud consultada pelo app.",
+            "endpoint_publico": False,
+        }
+    if tribunal.startswith("tj"):
+        return {
+            "categoria": "Tribunal de Justica",
+            "titulo": f"Sugestoes para {tribunal or 'tj'}",
+            "codigos": CODIGOS_TJ,
+            "observacao": "Base inicial util para TJMG, TJSP, TJRJ e demais TJs.",
+            "endpoint_publico": True,
+        }
+    return {
+        "categoria": "Nao mapeado",
+        "titulo": "Sugestoes basicas",
+        "codigos": [],
+        "observacao": "Consulte as siglas e os codigos oficiais do CNJ para este tribunal.",
+        "endpoint_publico": True,
+    }
+
+
+def render_codigo_sugestoes(tribunal_sigla: str) -> None:
+    sugestoes = get_codigo_sugestoes(tribunal_sigla)
+    with st.expander("Sugestoes de codigos para este tribunal", expanded=True):
+        st.caption(f"Categoria detectada: {sugestoes['categoria']}")
+        if sugestoes["codigos"]:
+            linhas = [
+                f"- `{codigo}` - {classe}" for codigo, classe in sugestoes["codigos"]
+            ]
+            st.markdown("\n".join(linhas))
+        else:
+            st.caption("Nenhuma sugestao automatica disponivel para esta sigla.")
+        st.caption(str(sugestoes["observacao"]))
+        if not bool(sugestoes["endpoint_publico"]):
+            st.warning(
+                "A lista publica de endpoints do DataJud nao mostra endpoint publico para esta sigla. "
+                "A consulta pode nao funcionar no app."
+            )
 
 
 def normalize_numero_processo(raw_numero: str) -> str:
@@ -545,10 +753,16 @@ def render() -> None:
         st.markdown(
             "[Onde obter API Key (DataJud Wiki)](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
         )
-        tribunal_sigla = st.text_input("Tribunal (sigla)", value="tjmg", help="Ex.: tjmg, tjsp, tjrj")
+        tribunal_sigla = st.text_input(
+            "Tribunal (sigla)",
+            value="tjmg",
+            help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
+        )
+        st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
         classe_codigo = st.number_input("Classe codigo", min_value=1, value=12729, step=1)
+        render_codigo_sugestoes(tribunal_sigla)
         st.markdown(
-            "[Consultar codigos de classe (CNJ)](https://www.cnj.jus.br/sgt/consulta_publica_classes.php)"
+            f"[Consultar codigos de classe (CNJ)]({CNJ_CLASSES_URL})"
         )
         numero_processo = st.text_input(
             "Numero do processo (opcional)",

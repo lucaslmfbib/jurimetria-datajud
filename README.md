@@ -6,6 +6,7 @@ Aplicacao em Streamlit para analise jurimetrica com dados da API publica DataJud
 - Consulta por `classe.codigo` ou por `numeroProcesso`
 - Selecao de tribunal por sigla (`tjmg`, `tjsp`, `tjrj`, etc.)
 - Tabela de dados e indicadores de resumo
+- Guia rapido de tribunais e codigos: `GUIA_TRIBUNAIS_E_CODIGOS.md`
 - Graficos:
   - Horario de ajuizamento
   - Expediente x fora do expediente
