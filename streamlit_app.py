@@ -239,9 +239,27 @@ def get_codigo_sugestoes(tribunal_sigla: str) -> dict[str, Any]:
 
 def render_codigo_sugestoes(tribunal_sigla: str) -> None:
     sugestoes = get_codigo_sugestoes(tribunal_sigla)
+    sigla_atual = normalize_tribunal_sigla(tribunal_sigla)
+    sigla_mapeada = normalize_tribunal_sigla(str(st.session_state.get("sigla_mapa", "")))
+    top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
+    qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     with st.expander("Sugestoes de codigos para este tribunal", expanded=True):
         st.caption(f"Categoria detectada: {sugestoes['categoria']}")
-        if sugestoes["codigos"]:
+        if (
+            sigla_atual
+            and sigla_atual == sigla_mapeada
+            and isinstance(top_codigos, pd.DataFrame)
+            and not top_codigos.empty
+        ):
+            st.markdown("**Codigos mais comuns na amostra da sigla**")
+            linhas = [
+                f"- `{row['classe_codigo']}` - {row['classe']}"
+                for _, row in top_codigos.head(10).iterrows()
+            ]
+            st.markdown("\n".join(linhas))
+            if qtd_mapa:
+                st.caption(f"Mapa automatico baseado em ate {qtd_mapa:,} registros recentes da sigla.".replace(",", "."))
+        elif sugestoes["codigos"]:
             linhas = [
                 f"- `{codigo}` - {classe}" for codigo, classe in sugestoes["codigos"]
             ]
@@ -854,18 +872,11 @@ def render() -> None:
             help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
         )
         st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
-        modo_consulta_label = st.radio(
-            "Modo de consulta",
-            ("Classe ou processo", "Mapa do tribunal"),
-            help="O mapa do tribunal ignora o filtro por classe e mostra os codigos, classes e assuntos mais comuns na amostra da sigla.",
-        )
-        modo_consulta = "mapa_tribunal" if modo_consulta_label == "Mapa do tribunal" else "classe_ou_processo"
         classe_codigo = st.number_input(
             "Classe codigo",
             min_value=1,
             value=12729,
             step=1,
-            disabled=modo_consulta == "mapa_tribunal",
         )
         render_codigo_sugestoes(tribunal_sigla)
         st.markdown(
@@ -875,14 +886,10 @@ def render() -> None:
             "Numero do processo (opcional)",
             placeholder="Ex.: 50012345620248130024",
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
-            disabled=modo_consulta == "mapa_tribunal",
         )
-        if modo_consulta == "mapa_tribunal":
-            st.caption(
-                "No mapa do tribunal, o app usa a sigla para buscar uma amostra recente e montar rankings de codigos, classes e assuntos."
-            )
-        else:
-            st.caption("Ao buscar por numero do processo, selecione o tribunal correto.")
+        st.caption(
+            "Ao executar a consulta, o app tambem monta automaticamente um mapa da sigla com os codigos, classes e assuntos mais comuns."
+        )
         modo_rapido = st.checkbox(
             "Modo rapido (recomendado)",
             value=True,
@@ -919,6 +926,7 @@ def render() -> None:
         with st.spinner("Buscando dados no DataJud..."):
             started = time.perf_counter()
             try:
+                usar_numero_processo = bool(normalize_numero_processo(numero_processo))
                 hits = fetch_hits(
                     api_key=api_key,
                     classe_codigo=int(classe_codigo),
@@ -926,19 +934,34 @@ def render() -> None:
                     url=url,
                     numero_processo=numero_processo,
                     incluir_movimentos=not modo_rapido,
-                    modo_consulta=modo_consulta,
+                    modo_consulta="classe_ou_processo",
                 )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 top_100 = build_top_100(df_anpp)
-                top_codigos = top_codigos_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
-                top_classes = top_classes_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
-                top_assuntos = top_assuntos_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
+                mapa_size = min(max(int(size), 2000), MAX_PAGE_SIZE)
+                top_codigos = pd.DataFrame()
+                top_classes = pd.DataFrame()
+                top_assuntos = pd.DataFrame()
+                qtd_mapa = 0
+
+                if not usar_numero_processo:
+                    hits_mapa = fetch_hits(
+                        api_key=api_key,
+                        classe_codigo=int(classe_codigo),
+                        size=mapa_size,
+                        url=url,
+                        numero_processo="",
+                        incluir_movimentos=False,
+                        modo_consulta="mapa_tribunal",
+                    )
+                    df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
+                    top_codigos = top_codigos_dataframe(df_mapa)
+                    top_classes = top_classes_dataframe(df_mapa)
+                    top_assuntos = top_assuntos_dataframe(df_mapa)
+                    qtd_mapa = len(df_mapa)
 
                 # Se a amostra vier curta para histórico mensal, tenta ampliar só para o gráfico.
                 df_mensal = df_anpp
-                usar_numero_processo = (
-                    modo_consulta != "mapa_tribunal" and bool(normalize_numero_processo(numero_processo))
-                )
                 if ampliar_historico and not usar_numero_processo and int(size) < 10000:
                     meses_base = len(monthly_counts(df_anpp, max_meses=12))
                     if meses_base < 12:
@@ -950,7 +973,7 @@ def render() -> None:
                                 url=url,
                                 numero_processo="",
                                 incluir_movimentos=False,
-                                modo_consulta=modo_consulta,
+                                modo_consulta="classe_ou_processo",
                             )
                             df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
                             meses_candidato = len(monthly_counts(df_mensal_candidato, max_meses=12))
@@ -980,7 +1003,8 @@ def render() -> None:
         st.session_state["df_mensal"] = df_mensal
         st.session_state["top_100"] = top_100
         st.session_state["hits"] = hits
-        st.session_state["modo_consulta"] = modo_consulta
+        st.session_state["sigla_mapa"] = tribunal_sigla
+        st.session_state["qtd_mapa"] = qtd_mapa
         st.session_state["top_codigos"] = top_codigos
         st.session_state["top_classes"] = top_classes
         st.session_state["top_assuntos"] = top_assuntos
@@ -993,10 +1017,10 @@ def render() -> None:
     df_anpp = st.session_state["df_anpp"]
     df_mensal = st.session_state.get("df_mensal", df_anpp)
     top_100 = st.session_state["top_100"]
-    modo_consulta = st.session_state.get("modo_consulta", "classe_ou_processo")
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
     top_classes = st.session_state.get("top_classes", pd.DataFrame())
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
+    qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
@@ -1018,9 +1042,14 @@ def render() -> None:
     top_100_df = top_100_to_dataframe(top_100)
     st.dataframe(top_100_df, use_container_width=True, height=350)
 
-    if modo_consulta == "mapa_tribunal":
-        st.subheader("Mapa do tribunal na amostra atual")
-        st.caption("Os rankings abaixo usam apenas os registros retornados nesta consulta para a sigla selecionada.")
+    if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
+        st.subheader("Mapa automatico da sigla")
+        if qtd_mapa:
+            st.caption(
+                f"Os rankings abaixo usam uma amostra automatica de ate {qtd_mapa:,} registros recentes da sigla selecionada.".replace(",", ".")
+            )
+        else:
+            st.caption("Os rankings abaixo usam uma amostra automatica da sigla selecionada.")
         col_codigos, col_classes, col_assuntos = st.columns(3)
         with col_codigos:
             st.markdown("**Top 10 codigos**")
