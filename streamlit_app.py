@@ -1060,25 +1060,6 @@ def render() -> None:
     top_100_df = top_100_to_dataframe(top_100)
     st.dataframe(top_100_df, use_container_width=True, height=350)
 
-    if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
-        st.subheader("Mapa automatico da sigla")
-        if qtd_mapa:
-            st.caption(
-                f"Os rankings abaixo usam uma amostra automatica de ate {qtd_mapa:,} registros recentes da sigla selecionada.".replace(",", ".")
-            )
-        else:
-            st.caption("Os rankings abaixo usam uma amostra automatica da sigla selecionada.")
-        col_codigos, col_classes, col_assuntos = st.columns(3)
-        with col_codigos:
-            st.markdown("**Top 10 codigos**")
-            st.dataframe(top_codigos, use_container_width=True, height=320)
-        with col_classes:
-            st.markdown("**Top 10 classes**")
-            st.dataframe(top_classes, use_container_width=True, height=320)
-        with col_assuntos:
-            st.markdown("**Top 10 assuntos**")
-            st.dataframe(top_assuntos, use_container_width=True, height=320)
-
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Horario")
@@ -1102,6 +1083,29 @@ def render() -> None:
         st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
     else:
         st.caption("Graficos avancados ocultos para resposta mais rapida. Ative na barra lateral.")
+
+    if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
+        sigla_mapa = str(st.session_state.get("sigla_mapa", "")).strip().upper()
+        titulo_mapa = "Mapa automatico da sigla do tribunal"
+        if sigla_mapa:
+            titulo_mapa = f"Mapa automatico da sigla do tribunal ({sigla_mapa})"
+        st.subheader(titulo_mapa)
+        if qtd_mapa:
+            st.caption(
+                f"Os rankings abaixo se referem a sigla do tribunal selecionado e usam uma amostra automatica de ate {qtd_mapa:,} registros recentes.".replace(",", ".")
+            )
+        else:
+            st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
+        col_codigos, col_classes, col_assuntos = st.columns(3)
+        with col_codigos:
+            st.markdown("**Top 10 codigos**")
+            st.dataframe(top_codigos, use_container_width=True, height=320)
+        with col_classes:
+            st.markdown("**Top 10 classes**")
+            st.dataframe(top_classes, use_container_width=True, height=320)
+        with col_assuntos:
+            st.markdown("**Top 10 assuntos**")
+            st.dataframe(top_assuntos, use_container_width=True, height=320)
 
     st.subheader("Downloads")
     csv_bytes = df_anpp.to_csv(index=False).encode("utf-8")
