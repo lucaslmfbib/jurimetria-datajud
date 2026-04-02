@@ -148,7 +148,7 @@ def normalize_tribunal_sigla(raw_sigla: str) -> str:
 
 def get_codigo_sugestoes(tribunal_sigla: str) -> dict[str, Any]:
     tribunal = normalize_tribunal_sigla(tribunal_sigla)
-    if tribunal in {"tjmmg", "tjmrs", "tjmsp"} or tribunal.startswith("tjm"):
+    if tribunal in {"tjmmg", "tjmrs", "tjmsp"}:
         return {
             "categoria": "Tribunal de Justica Militar",
             "titulo": f"Sugestoes para {tribunal or 'tjm'}",
@@ -244,7 +244,10 @@ def render_codigo_sugestoes(tribunal_sigla: str) -> None:
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     with st.expander("Sugestoes de codigos para este tribunal", expanded=True):
-        st.caption(f"Categoria detectada: {sugestoes['categoria']}")
+        if sigla_atual:
+            st.caption(f"Sigla atual: {sigla_atual.upper()} | Categoria detectada: {sugestoes['categoria']}")
+        else:
+            st.caption(f"Categoria detectada: {sugestoes['categoria']}")
         if (
             sigla_atual
             and sigla_atual == sigla_mapeada
