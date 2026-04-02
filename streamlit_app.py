@@ -581,6 +581,18 @@ def top_assuntos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.Dat
     return assuntos.value_counts().head(max_items).rename_axis("assunto").reset_index(name="quantidade")
 
 
+def assuntos_distintos_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
+    if df_anpp.empty or "assuntos" not in df_anpp.columns:
+        return pd.DataFrame(columns=["assunto", "quantidade"])
+
+    assuntos = df_anpp["assuntos"].explode().dropna().astype(str).str.strip()
+    assuntos = assuntos[assuntos != ""]
+    if assuntos.empty:
+        return pd.DataFrame(columns=["assunto", "quantidade"])
+
+    return assuntos.value_counts().rename_axis("assunto").reset_index(name="quantidade")
+
+
 def dataframe_for_display(df_anpp: pd.DataFrame, max_rows: int = 400) -> pd.DataFrame:
     if df_anpp.empty:
         return df_anpp
@@ -1022,6 +1034,7 @@ def render() -> None:
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     df_view = dataframe_for_display(df_anpp, max_rows=400)
+    assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
         if "assuntos" in df_anpp.columns
@@ -1031,8 +1044,13 @@ def render() -> None:
     st.subheader("Resumo")
     c1, c2, c3 = st.columns(3)
     c1.metric("Registros", f"{len(df_anpp):,}".replace(",", "."))
-    c2.metric("Assuntos unicos", str(total_assuntos))
+    c2.metric("Temas diferentes", str(total_assuntos))
     c3.metric("Orgaos julgadores", str(df_anpp["orgao_julgador"].nunique()))
+
+    if not assuntos_distintos.empty:
+        with st.expander("Ver temas diferentes desta amostra", expanded=False):
+            st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
+            st.dataframe(assuntos_distintos, use_container_width=True, height=320)
 
     st.subheader("Tabela")
     st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
