@@ -303,15 +303,19 @@ def fetch_hits(
     url: str,
     numero_processo: str = "",
     incluir_movimentos: bool = False,
+    modo_consulta: str = "classe_ou_processo",
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
     if numero_limpo:
         query: dict[str, Any] = {"match": {"numeroProcesso": numero_limpo}}
+    elif modo_consulta == "mapa_tribunal":
+        query = {"match_all": {}}
     else:
         query = {"match": {"classe.codigo": classe_codigo}}
 
     campos_source = [
         "numeroProcesso",
+        "classe.codigo",
         "classe.nome",
         "dataAjuizamento",
         "dataHoraUltimaAtualizacao",
@@ -394,11 +398,11 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         rows.append(
             [
                 source.get("numeroProcesso"),
+                classe.get("codigo"),
                 classe.get("nome"),
                 source.get("dataAjuizamento"),
                 source.get("dataHoraUltimaAtualizacao"),
                 source.get("formato"),
-                source.get("numeroProcesso"),
                 orgao.get("nome"),
                 orgao.get("codigoMunicipioIBGE"),
                 source.get("grau"),
@@ -410,11 +414,11 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
 
     columns = [
         "numero_processo",
+        "classe_codigo",
         "classe",
         "data_ajuizamento",
         "ultima_atualizacao",
         "formato",
-        "codigo",
         "orgao_julgador",
         "municipio",
         "grau",
@@ -449,8 +453,8 @@ def build_top_100(df_anpp: pd.DataFrame) -> pd.Series:
     if df_anpp.empty:
         return pd.Series(dtype="int64")
     return (
-        df_anpp.groupby(["municipio", "orgao_julgador"])["codigo"]
-        .count()
+        df_anpp.groupby(["municipio", "orgao_julgador"])
+        .size()
         .sort_values(ascending=False)
         .head(100)
     )
@@ -504,6 +508,59 @@ def top_100_to_dataframe(top_100: pd.Series) -> pd.DataFrame:
     if top_100_df.shape[1] == 2:
         top_100_df.columns = ["chave", "quantidade"]
     return top_100_df
+
+
+def top_codigos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "classe_codigo" not in df_anpp.columns:
+        return pd.DataFrame(columns=["classe_codigo", "classe", "quantidade"])
+
+    base = df_anpp[["classe_codigo", "classe"]].copy()
+    base["classe_codigo"] = pd.to_numeric(base["classe_codigo"], errors="coerce").astype("Int64")
+    base["classe"] = base["classe"].fillna("").astype(str).str.strip()
+    base = base[base["classe_codigo"].notna()]
+    if base.empty:
+        return pd.DataFrame(columns=["classe_codigo", "classe", "quantidade"])
+
+    referencias = (
+        base[base["classe"] != ""]
+        .drop_duplicates(subset=["classe_codigo"])
+        .rename(columns={"classe": "classe_referencia"})
+    )
+    resultado = (
+        base.groupby("classe_codigo", dropna=False)
+        .size()
+        .reset_index(name="quantidade")
+        .sort_values("quantidade", ascending=False)
+        .head(max_items)
+        .merge(referencias[["classe_codigo", "classe_referencia"]], on="classe_codigo", how="left")
+        .rename(columns={"classe_referencia": "classe"})
+    )
+    resultado["classe_codigo"] = resultado["classe_codigo"].astype("Int64").astype(str)
+    return resultado[["classe_codigo", "classe", "quantidade"]]
+
+
+def top_classes_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "classe" not in df_anpp.columns:
+        return pd.DataFrame(columns=["classe", "quantidade"])
+
+    classes = df_anpp["classe"].fillna("").astype(str).str.strip()
+    classes = classes[classes != ""]
+    if classes.empty:
+        return pd.DataFrame(columns=["classe", "quantidade"])
+
+    return classes.value_counts().head(max_items).rename_axis("classe").reset_index(name="quantidade")
+
+
+def top_assuntos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "assuntos" not in df_anpp.columns:
+        return pd.DataFrame(columns=["assunto", "quantidade"])
+
+    assuntos = df_anpp["assuntos"].explode().dropna().astype(str).str.strip()
+    assuntos = assuntos[assuntos != ""]
+    if assuntos.empty:
+        return pd.DataFrame(columns=["assunto", "quantidade"])
+
+    return assuntos.value_counts().head(max_items).rename_axis("assunto").reset_index(name="quantidade")
 
 
 def dataframe_for_display(df_anpp: pd.DataFrame, max_rows: int = 400) -> pd.DataFrame:
@@ -797,7 +854,19 @@ def render() -> None:
             help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
         )
         st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
-        classe_codigo = st.number_input("Classe codigo", min_value=1, value=12729, step=1)
+        modo_consulta_label = st.radio(
+            "Modo de consulta",
+            ("Classe ou processo", "Mapa do tribunal"),
+            help="O mapa do tribunal ignora o filtro por classe e mostra os codigos, classes e assuntos mais comuns na amostra da sigla.",
+        )
+        modo_consulta = "mapa_tribunal" if modo_consulta_label == "Mapa do tribunal" else "classe_ou_processo"
+        classe_codigo = st.number_input(
+            "Classe codigo",
+            min_value=1,
+            value=12729,
+            step=1,
+            disabled=modo_consulta == "mapa_tribunal",
+        )
         render_codigo_sugestoes(tribunal_sigla)
         st.markdown(
             f"[Consultar codigos de classe (CNJ)]({CNJ_CLASSES_URL})"
@@ -806,8 +875,14 @@ def render() -> None:
             "Numero do processo (opcional)",
             placeholder="Ex.: 50012345620248130024",
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
+            disabled=modo_consulta == "mapa_tribunal",
         )
-        st.caption("Ao buscar por numero do processo, selecione o tribunal correto.")
+        if modo_consulta == "mapa_tribunal":
+            st.caption(
+                "No mapa do tribunal, o app usa a sigla para buscar uma amostra recente e montar rankings de codigos, classes e assuntos."
+            )
+        else:
+            st.caption("Ao buscar por numero do processo, selecione o tribunal correto.")
         modo_rapido = st.checkbox(
             "Modo rapido (recomendado)",
             value=True,
@@ -851,13 +926,20 @@ def render() -> None:
                     url=url,
                     numero_processo=numero_processo,
                     incluir_movimentos=not modo_rapido,
+                    modo_consulta=modo_consulta,
                 )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 top_100 = build_top_100(df_anpp)
+                top_codigos = top_codigos_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
+                top_classes = top_classes_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
+                top_assuntos = top_assuntos_dataframe(df_anpp) if modo_consulta == "mapa_tribunal" else pd.DataFrame()
 
                 # Se a amostra vier curta para histórico mensal, tenta ampliar só para o gráfico.
                 df_mensal = df_anpp
-                if ampliar_historico and not numero_processo.strip() and int(size) < 10000:
+                usar_numero_processo = (
+                    modo_consulta != "mapa_tribunal" and bool(normalize_numero_processo(numero_processo))
+                )
+                if ampliar_historico and not usar_numero_processo and int(size) < 10000:
                     meses_base = len(monthly_counts(df_anpp, max_meses=12))
                     if meses_base < 12:
                         try:
@@ -868,6 +950,7 @@ def render() -> None:
                                 url=url,
                                 numero_processo="",
                                 incluir_movimentos=False,
+                                modo_consulta=modo_consulta,
                             )
                             df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
                             meses_candidato = len(monthly_counts(df_mensal_candidato, max_meses=12))
@@ -897,6 +980,10 @@ def render() -> None:
         st.session_state["df_mensal"] = df_mensal
         st.session_state["top_100"] = top_100
         st.session_state["hits"] = hits
+        st.session_state["modo_consulta"] = modo_consulta
+        st.session_state["top_codigos"] = top_codigos
+        st.session_state["top_classes"] = top_classes
+        st.session_state["top_assuntos"] = top_assuntos
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -906,6 +993,10 @@ def render() -> None:
     df_anpp = st.session_state["df_anpp"]
     df_mensal = st.session_state.get("df_mensal", df_anpp)
     top_100 = st.session_state["top_100"]
+    modo_consulta = st.session_state.get("modo_consulta", "classe_ou_processo")
+    top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
+    top_classes = st.session_state.get("top_classes", pd.DataFrame())
+    top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
@@ -926,6 +1017,20 @@ def render() -> None:
     st.subheader("Top 100 por municipio e orgao julgador")
     top_100_df = top_100_to_dataframe(top_100)
     st.dataframe(top_100_df, use_container_width=True, height=350)
+
+    if modo_consulta == "mapa_tribunal":
+        st.subheader("Mapa do tribunal na amostra atual")
+        st.caption("Os rankings abaixo usam apenas os registros retornados nesta consulta para a sigla selecionada.")
+        col_codigos, col_classes, col_assuntos = st.columns(3)
+        with col_codigos:
+            st.markdown("**Top 10 codigos**")
+            st.dataframe(top_codigos, use_container_width=True, height=320)
+        with col_classes:
+            st.markdown("**Top 10 classes**")
+            st.dataframe(top_classes, use_container_width=True, height=320)
+        with col_assuntos:
+            st.markdown("**Top 10 assuntos**")
+            st.dataframe(top_assuntos, use_container_width=True, height=320)
 
     col_a, col_b = st.columns(2)
     with col_a:
