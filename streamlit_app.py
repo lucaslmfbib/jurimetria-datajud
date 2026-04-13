@@ -3,6 +3,7 @@ import importlib
 import os
 import time
 from typing import Any
+import unicodedata
 
 import pandas as pd
 import requests
@@ -107,6 +108,26 @@ CODIGOS_CONSELHOS = [
     (1264, "Processo Administrativo em Face de Magistrado"),
     (1262, "Processo Administrativo em Face de Servidor"),
 ]
+
+DECISAO_MOVIMENTO_HINTS = (
+    "procedent",
+    "improcedent",
+    "sentenc",
+    "acordao",
+    "julgado",
+    "julgamento",
+    "homolog",
+    "extint",
+    "arquiv",
+    "liminar",
+    "tutela",
+    "conden",
+    "absolv",
+    "provimento",
+    "improvido",
+    "prejudicad",
+    "nao conhecid",
+)
 
 
 @st.cache_resource(show_spinner=False)
@@ -314,6 +335,238 @@ def parse_movimentos(movimentos: Any) -> list[list[Any]]:
         data_hora = to_sao_paulo_datetime(movimento.get("dataHora"))
         parsed.append([codigo, nome, data_hora])
     return parsed
+
+
+def normalize_search_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKD", text)
+    return normalized.encode("ascii", "ignore").decode("ascii")
+
+
+def is_decisive_movement_name(nome: str) -> bool:
+    text = normalize_search_text(nome)
+    if not text:
+        return False
+    return any(hint in text for hint in DECISAO_MOVIMENTO_HINTS)
+
+
+def classify_decision_outcome(nome: str) -> str:
+    text = normalize_search_text(nome)
+    if not text:
+        return ""
+
+    if any(
+        trecho in text
+        for trecho in (
+            "parcialmente procedente",
+            "procedente em parte",
+            "parcial procedente",
+        )
+    ):
+        return "Parcialmente procedente"
+    if any(
+        trecho in text
+        for trecho in (
+            "parcial provimento",
+            "parcialmente provido",
+            "provido em parte",
+        )
+    ):
+        return "Parcial provimento"
+    if any(trecho in text for trecho in ("improcedente", "improcedencia")):
+        return "Improcedente"
+    if any(
+        trecho in text
+        for trecho in (
+            "negar provimento",
+            "negado provimento",
+            "improvido",
+            "recurso nao provido",
+        )
+    ):
+        return "Recurso improvido"
+    if any(
+        trecho in text
+        for trecho in (
+            "dar provimento",
+            "deu provimento",
+            "recurso provido",
+            "provido",
+        )
+    ):
+        return "Recurso provido"
+    if any(trecho in text for trecho in ("procedente", "procedencia")):
+        return "Procedente"
+    if "homolog" in text and any(
+        trecho in text for trecho in ("acordo", "transacao", "conciliacao")
+    ):
+        return "Homologacao de acordo"
+    if "homolog" in text:
+        return "Homologacao"
+    if any(trecho in text for trecho in ("absolv", "absolvido", "absolver")):
+        return "Absolvicao"
+    if any(trecho in text for trecho in ("conden", "condenatoria")):
+        return "Condenacao"
+    if any(trecho in text for trecho in ("extint", "arquiv")):
+        return "Extincao/Arquivamento"
+    if any(trecho in text for trecho in ("deferid", "concedid")) and any(
+        trecho in text for trecho in ("liminar", "tutela", "seguranca")
+    ):
+        return "Tutela/Liminar concedida"
+    if any(trecho in text for trecho in ("indeferid", "negad", "denegad")) and any(
+        trecho in text for trecho in ("liminar", "tutela", "seguranca")
+    ):
+        return "Tutela/Liminar negada"
+    if any(trecho in text for trecho in ("nao conhecid", "prejudicad", "deserto")):
+        return "Nao conhecido/Prejudicado"
+    return ""
+
+
+def extract_latest_decision_proxy(movimentos: Any) -> tuple[str, str, Any]:
+    if not isinstance(movimentos, list):
+        return "", "", pd.NaT
+
+    for movimento in movimentos:
+        if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
+            continue
+        nome = str(movimento[1] or "").strip()
+        if not nome or not is_decisive_movement_name(nome):
+            continue
+        categoria = classify_decision_outcome(nome) or "Outro movimento decisorio"
+        data_hora = movimento[2] if len(movimento) > 2 else pd.NaT
+        return categoria, nome, data_hora
+
+    return "", "", pd.NaT
+
+
+def enrich_decision_proxy_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
+    if df_anpp.empty or "movimentos" not in df_anpp.columns:
+        return pd.DataFrame(
+            columns=[
+                *list(df_anpp.columns),
+                "decisao_categoria",
+                "decisao_movimento",
+                "decisao_data",
+                "dias_ate_decisao_proxy",
+            ]
+        )
+
+    df_decisao = df_anpp.copy()
+    extra = df_decisao["movimentos"].apply(extract_latest_decision_proxy)
+    extra_df = pd.DataFrame(
+        extra.tolist(),
+        columns=["decisao_categoria", "decisao_movimento", "decisao_data"],
+        index=df_decisao.index,
+    )
+    df_decisao = pd.concat([df_decisao, extra_df], axis=1)
+    df_decisao["decisao_data"] = pd.to_datetime(df_decisao["decisao_data"], errors="coerce")
+    df_decisao["dias_ate_decisao_proxy"] = (
+        df_decisao["decisao_data"] - df_decisao["data_ajuizamento"]
+    ).dt.total_seconds() / 86400.0
+    df_decisao.loc[df_decisao["dias_ate_decisao_proxy"] < 0, "dias_ate_decisao_proxy"] = pd.NA
+    return df_decisao
+
+
+def filter_dataframe_by_tema(df_anpp: pd.DataFrame, tema: str) -> pd.DataFrame:
+    if df_anpp.empty or not tema or "assuntos" not in df_anpp.columns:
+        return df_anpp.copy()
+    mask = df_anpp["assuntos"].apply(
+        lambda assuntos: tema in assuntos if isinstance(assuntos, list) else False
+    )
+    return df_anpp.loc[mask].copy()
+
+
+def decision_outcomes_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "decisao_categoria" not in df_anpp.columns:
+        return pd.DataFrame(columns=["desfecho", "quantidade"])
+
+    base = df_anpp["decisao_categoria"].fillna("").astype(str).str.strip()
+    base = base[base != ""]
+    if base.empty:
+        return pd.DataFrame(columns=["desfecho", "quantidade"])
+
+    return base.value_counts().head(max_items).rename_axis("desfecho").reset_index(name="quantidade")
+
+
+def decision_movements_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "decisao_movimento" not in df_anpp.columns:
+        return pd.DataFrame(columns=["movimento", "quantidade"])
+
+    base = df_anpp["decisao_movimento"].fillna("").astype(str).str.strip()
+    base = base[base != ""]
+    if base.empty:
+        return pd.DataFrame(columns=["movimento", "quantidade"])
+
+    return base.value_counts().head(max_items).rename_axis("movimento").reset_index(name="quantidade")
+
+
+def decision_by_orgao_dataframe(df_anpp: pd.DataFrame, max_orgaos: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "processos_tema",
+                "com_desfecho",
+                "cobertura",
+                "desfecho_predominante",
+                "forca_predominante",
+                "mediana_dias",
+            ]
+        )
+
+    base = df_anpp.copy()
+    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
+    base = base[base["orgao_julgador"] != ""]
+    if base.empty:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "processos_tema",
+                "com_desfecho",
+                "cobertura",
+                "desfecho_predominante",
+                "forca_predominante",
+                "mediana_dias",
+            ]
+        )
+
+    top_orgaos = base["orgao_julgador"].value_counts().head(max_orgaos).index.tolist()
+    base = base[base["orgao_julgador"].isin(top_orgaos)]
+
+    linhas: list[dict[str, Any]] = []
+    for orgao in top_orgaos:
+        grupo = base[base["orgao_julgador"] == orgao]
+        total = len(grupo)
+        com_desfecho = grupo["decisao_categoria"].fillna("").astype(str).str.strip()
+        com_desfecho = com_desfecho[com_desfecho != ""]
+        qtd_desfecho = len(com_desfecho)
+        cobertura = f"{(qtd_desfecho / total * 100):.1f}%" if total else "0.0%"
+        if qtd_desfecho:
+            contagem = com_desfecho.value_counts()
+            desfecho_predominante = str(contagem.index[0])
+            forca_predominante = f"{(contagem.iloc[0] / qtd_desfecho * 100):.1f}%"
+        else:
+            desfecho_predominante = "Sem leitura"
+            forca_predominante = "-"
+
+        dias = pd.to_numeric(grupo["dias_ate_decisao_proxy"], errors="coerce").dropna()
+        mediana_dias = round(float(dias.median()), 1) if not dias.empty else pd.NA
+
+        linhas.append(
+            {
+                "orgao_julgador": orgao,
+                "processos_tema": total,
+                "com_desfecho": qtd_desfecho,
+                "cobertura": cobertura,
+                "desfecho_predominante": desfecho_predominante,
+                "forca_predominante": forca_predominante,
+                "mediana_dias": mediana_dias,
+            }
+        )
+
+    return pd.DataFrame(linhas)
 
 
 @st.cache_data(show_spinner=False, ttl=1200)
@@ -954,12 +1207,32 @@ def render() -> None:
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 top_100 = build_top_100(df_anpp)
                 mapa_size = min(max(int(size), 2000), MAX_PAGE_SIZE)
+                decisao_size = min(max(int(size), 400), 1200)
                 top_codigos = pd.DataFrame()
                 top_classes = pd.DataFrame()
                 top_assuntos = pd.DataFrame()
+                df_decisao = pd.DataFrame()
                 qtd_mapa = 0
+                qtd_decisao = 0
 
                 if not usar_numero_processo:
+                    if modo_rapido:
+                        hits_decisao = fetch_hits(
+                            api_key=api_key,
+                            classe_codigo=int(classe_codigo),
+                            size=decisao_size,
+                            url=url,
+                            numero_processo="",
+                            incluir_movimentos=True,
+                            modo_consulta="classe_ou_processo",
+                        )
+                        df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
+                    else:
+                        df_decisao = df_anpp.head(decisao_size).copy()
+
+                    df_decisao = enrich_decision_proxy_dataframe(df_decisao)
+                    qtd_decisao = len(df_decisao)
+
                     hits_mapa = fetch_hits(
                         api_key=api_key,
                         classe_codigo=int(classe_codigo),
@@ -1023,6 +1296,9 @@ def render() -> None:
         st.session_state["top_codigos"] = top_codigos
         st.session_state["top_classes"] = top_classes
         st.session_state["top_assuntos"] = top_assuntos
+        st.session_state["df_decisao"] = df_decisao
+        st.session_state["qtd_decisao"] = qtd_decisao
+        st.session_state["usar_numero_processo"] = usar_numero_processo
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -1035,7 +1311,10 @@ def render() -> None:
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
     top_classes = st.session_state.get("top_classes", pd.DataFrame())
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
+    df_decisao = st.session_state.get("df_decisao", pd.DataFrame())
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
+    qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
+    usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     total_assuntos = (
@@ -1054,6 +1333,74 @@ def render() -> None:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
+
+    if usar_numero_processo:
+        st.info(
+            "A leitura decisoria por tema aparece nas consultas por classe/tema. "
+            "Quando voce busca por numero do processo, o app mostra o caso individual."
+        )
+    elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+        temas_decisao = assuntos_distintos_dataframe(df_decisao)
+        st.subheader("Leitura decisoria por tema")
+        st.caption(
+            "Esta leitura usa o ultimo movimento decisorio identificado em cada processo como proxy do desfecho. "
+            "Quando o retorno nao expoe juiz ou relator, a comparacao e feita por orgao julgador."
+        )
+        if qtd_decisao:
+            st.caption(
+                f"Analise baseada em ate {qtd_decisao:,} registros recentes com movimentos completos.".replace(",", ".")
+            )
+
+        tema_opcoes = temas_decisao["assunto"].tolist()
+        if tema_opcoes:
+            tema_escolhido = st.selectbox(
+                "Tema para analisar",
+                options=tema_opcoes,
+                index=0,
+                help="Escolha um tema encontrado na amostra com movimentos completos.",
+            )
+        else:
+            tema_escolhido = ""
+
+        if tema_escolhido:
+            df_tema_decisao = filter_dataframe_by_tema(df_decisao, tema_escolhido)
+            desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
+            movimentos_tema = decision_movements_dataframe(df_tema_decisao)
+            orgaos_tema = decision_by_orgao_dataframe(df_tema_decisao)
+
+            total_tema = len(df_tema_decisao)
+            total_com_desfecho = int(
+                df_tema_decisao["decisao_categoria"].fillna("").astype(str).str.strip().ne("").sum()
+            )
+            cobertura = (total_com_desfecho / total_tema * 100) if total_tema else 0.0
+            desfecho_predominante = (
+                str(desfechos_tema.iloc[0]["desfecho"])
+                if not desfechos_tema.empty
+                else "Sem leitura"
+            )
+            dias_decisao = pd.to_numeric(
+                df_tema_decisao["dias_ate_decisao_proxy"], errors="coerce"
+            ).dropna()
+            mediana_dias = f"{dias_decisao.median():.0f} dias" if not dias_decisao.empty else "-"
+
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
+            d2.metric("Cobertura decisoria", f"{cobertura:.1f}%")
+            d3.metric("Desfecho predominante", desfecho_predominante)
+            d4.metric("Mediana ate desfecho", mediana_dias)
+
+            col_desfechos, col_movimentos = st.columns(2)
+            with col_desfechos:
+                st.markdown("**Desfechos mais frequentes no tema**")
+                st.dataframe(desfechos_tema, use_container_width=True, height=300)
+            with col_movimentos:
+                st.markdown("**Movimentos decisorios mais frequentes**")
+                st.dataframe(movimentos_tema, use_container_width=True, height=300)
+
+            st.markdown("**Como os orgaos julgadores estao decidindo este tema**")
+            st.dataframe(orgaos_tema, use_container_width=True, height=360)
+        else:
+            st.info("Nao encontrei temas suficientes para montar a leitura decisoria.")
 
     st.subheader("Tabela")
     st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
