@@ -378,6 +378,61 @@ def get_estrutura_options(tribunal_sigla: str) -> dict[str, Any]:
     }
 
 
+def format_estrutura_option(estrutura: str) -> str:
+    labels = {
+        "Todos": "Todos os niveis",
+        "1o Grau": "1o grau (varas / juizos)",
+        "2o Grau": "2o grau (camaras / turmas)",
+        "Juizado Especial": "Juizado Especial",
+        "Turmas Recursais": "Turmas Recursais",
+        "Juizado Especial da Fazenda Publica": "Juizado da Fazenda Publica",
+        "Turma Estadual de Uniformizacao": "Turma Estadual de Uniformizacao",
+        "Turma Regional de Uniformizacao": "Turma Regional de Uniformizacao",
+        "Turma Nacional de Uniformizacao (CJF)": "TNU (CJF)",
+        "Zonas Eleitorais": "Zonas Eleitorais (1o grau eleitoral)",
+        "TRE": "TRE (tribunal regional eleitoral)",
+        "TJM": "TJM (tribunal militar estadual)",
+        "STM": "STM (tribunal militar da Uniao)",
+        "TST": "TST",
+        "TSE": "TSE",
+        "STJ": "STJ",
+        "STF": "STF",
+        "CNJ": "CNJ",
+        "CJF": "CJF",
+        "CSJT": "CSJT",
+    }
+    return labels.get(estrutura, estrutura)
+
+
+def describe_estrutura_option(estrutura: str) -> str:
+    descricoes = {
+        "Todos": "Analisa toda a estrutura da sigla selecionada, sem separar por instancia ou orgao especial.",
+        "1o Grau": "Em geral, inclui varas, juizos, auditorias, comarcas e unidades de entrada do processo.",
+        "2o Grau": "Em geral, inclui camaras, turmas, secoes e o proprio tribunal em grau recursal.",
+        "Juizado Especial": "Foca nos juizados especiais identificados no nome do orgao julgador.",
+        "Turmas Recursais": "Foca nas turmas recursais ou colegios recursais ligados aos juizados.",
+        "Juizado Especial da Fazenda Publica": "Foca nos juizados especiais da Fazenda Publica quando o orgao for identificado assim.",
+        "Turma Estadual de Uniformizacao": "Foca na turma estadual que uniformiza entendimento dos juizados.",
+        "Turma Regional de Uniformizacao": "Foca na turma regional de uniformizacao da Justica Federal.",
+        "Turma Nacional de Uniformizacao (CJF)": "Foca na TNU quando ela aparecer identificada na amostra.",
+        "Zonas Eleitorais": "Foca no primeiro grau da Justica Eleitoral, normalmente as zonas eleitorais.",
+        "TRE": "Foca no tribunal regional eleitoral.",
+        "TJM": "Foca no tribunal de Justica Militar estadual.",
+        "STM": "Foca no Superior Tribunal Militar.",
+        "TST": "Foca no Tribunal Superior do Trabalho.",
+        "TSE": "Foca no Tribunal Superior Eleitoral.",
+        "STJ": "Foca no Superior Tribunal de Justica.",
+        "STF": "Foca no Supremo Tribunal Federal.",
+        "CNJ": "Foca no Conselho Nacional de Justica.",
+        "CJF": "Foca no Conselho da Justica Federal.",
+        "CSJT": "Foca no Conselho Superior da Justica do Trabalho.",
+    }
+    return descricoes.get(
+        estrutura,
+        "Filtro estrutural baseado no grau processual e, quando necessario, no nome do orgao julgador.",
+    )
+
+
 def infer_grau_bucket(grau: Any) -> str:
     text = normalize_search_text(grau)
     if text in {"1", "g1", "1 grau", "1o grau", "primeiro grau"}:
@@ -1340,11 +1395,13 @@ def render() -> None:
         st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
         estrutura_info = get_estrutura_options(tribunal_sigla)
         estrutura_filtro = st.selectbox(
-            "Estrutura do tribunal (opcional)",
+            "Instancia / estrutura do tribunal (opcional)",
             options=estrutura_info["opcoes"],
             index=0,
+            format_func=format_estrutura_option,
             help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
         )
+        st.caption(describe_estrutura_option(estrutura_filtro))
         st.caption(str(estrutura_info["observacao"]))
         classe_codigo = st.number_input(
             "Classe codigo",
@@ -1550,7 +1607,7 @@ def render() -> None:
 
     if estrutura_filtro != "Todos" and not usar_numero_processo:
         st.caption(
-            f"Filtro estrutural aplicado: {estrutura_filtro}. "
+            f"Filtro estrutural aplicado: {format_estrutura_option(estrutura_filtro)}. "
             "Quando a API nao traz a estrutura de forma explicita, o app estima pelo grau e pelo nome do orgao julgador."
         )
 
@@ -1670,7 +1727,7 @@ def render() -> None:
                 f"Os rankings abaixo se referem a sigla do tribunal selecionado e usam uma amostra automatica de ate {qtd_mapa:,} registros recentes.".replace(",", ".")
             )
             if estrutura_filtro != "Todos" and not usar_numero_processo:
-                mensagem_mapa += f" Filtro estrutural aplicado: {estrutura_filtro}."
+                mensagem_mapa += f" Filtro estrutural aplicado: {format_estrutura_option(estrutura_filtro)}."
             st.caption(mensagem_mapa)
         else:
             st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
