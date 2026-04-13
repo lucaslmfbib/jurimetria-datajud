@@ -298,6 +298,204 @@ def render_codigo_sugestoes(tribunal_sigla: str) -> None:
             )
 
 
+def get_estrutura_options(tribunal_sigla: str) -> dict[str, Any]:
+    tribunal = normalize_tribunal_sigla(tribunal_sigla)
+    opcoes_base = ["Todos"]
+
+    if tribunal in {"tjmmg", "tjmrs", "tjmsp"}:
+        return {
+            "opcoes": opcoes_base + ["1o Grau", "TJM"],
+            "observacao": "O app usa o campo de grau e, quando preciso, o nome do orgao julgador para diferenciar 1o grau e tribunal militar.",
+        }
+    if tribunal.startswith("tj"):
+        return {
+            "opcoes": opcoes_base
+            + [
+                "1o Grau",
+                "2o Grau",
+                "Juizado Especial",
+                "Turmas Recursais",
+                "Juizado Especial da Fazenda Publica",
+                "Turma Estadual de Uniformizacao",
+            ],
+            "observacao": "Juizados, turmas recursais e uniformizacao sao estimados principalmente pelo nome do orgao julgador.",
+        }
+    if tribunal.startswith("trf"):
+        return {
+            "opcoes": opcoes_base
+            + [
+                "1o Grau",
+                "2o Grau",
+                "Juizado Especial",
+                "Turmas Recursais",
+                "Turma Regional de Uniformizacao",
+            ],
+            "observacao": "Na Justica Federal, o app combina grau e nome do orgao para sugerir a estrutura.",
+        }
+    if tribunal == "cjf":
+        return {
+            "opcoes": opcoes_base + ["CJF", "Turma Nacional de Uniformizacao (CJF)"],
+            "observacao": "A TNU e estimada pelo nome do orgao julgador quando aparecer na amostra.",
+        }
+    if tribunal.startswith("trt"):
+        return {
+            "opcoes": opcoes_base + ["1o Grau", "2o Grau"],
+            "observacao": "Na Justica do Trabalho, o filtro estrutural usa o campo de grau e o nome do orgao julgador.",
+        }
+    if tribunal == "tst":
+        return {
+            "opcoes": opcoes_base + ["TST"],
+            "observacao": "A propria sigla ja identifica o tribunal superior trabalhista.",
+        }
+    if tribunal == "csjt":
+        return {
+            "opcoes": opcoes_base + ["CSJT"],
+            "observacao": "A propria sigla ja identifica o conselho superior trabalhista.",
+        }
+    if tribunal == "stm":
+        return {
+            "opcoes": opcoes_base + ["1o Grau", "STM"],
+            "observacao": "O app diferencia 1o grau e STM pelo grau processual e pelo nome do orgao, quando disponiveis.",
+        }
+    if tribunal.startswith("tre"):
+        return {
+            "opcoes": opcoes_base + ["Zonas Eleitorais", "TRE"],
+            "observacao": "Na Justica Eleitoral regional, a leitura estrutural usa o nome do orgao julgador e o grau.",
+        }
+    if tribunal == "tse":
+        return {
+            "opcoes": opcoes_base + ["TSE"],
+            "observacao": "A propria sigla ja identifica o tribunal superior eleitoral.",
+        }
+    if tribunal in {"stf", "stj", "cnj"}:
+        return {
+            "opcoes": opcoes_base + [tribunal.upper()],
+            "observacao": "A propria sigla ja identifica a estrutura principal deste orgao.",
+        }
+    return {
+        "opcoes": ["Todos"],
+        "observacao": "Sem filtro estrutural especifico para esta sigla.",
+    }
+
+
+def infer_grau_bucket(grau: Any) -> str:
+    text = normalize_search_text(grau)
+    if text in {"1", "g1", "1 grau", "1o grau", "primeiro grau"}:
+        return "1o Grau"
+    if text in {"2", "g2", "2 grau", "2o grau", "segundo grau"}:
+        return "2o Grau"
+    return ""
+
+
+def infer_estrutura_label(tribunal_sigla: str, grau: Any, orgao_julgador: Any) -> str:
+    tribunal = normalize_tribunal_sigla(tribunal_sigla)
+    orgao = normalize_search_text(orgao_julgador)
+    grau_bucket = infer_grau_bucket(grau)
+
+    if tribunal in {"stf", "stj", "cnj", "tst", "csjt", "tse"}:
+        return tribunal.upper()
+
+    if tribunal == "cjf":
+        if "turma nacional de uniformizacao" in orgao or "tnu" in orgao:
+            return "Turma Nacional de Uniformizacao (CJF)"
+        return "CJF"
+
+    if tribunal in {"tjmmg", "tjmrs", "tjmsp"}:
+        if grau_bucket:
+            return "TJM" if grau_bucket == "2o Grau" else grau_bucket
+        if any(chave in orgao for chave in ("tribunal de justica militar", "tjm", "tribunal pleno")):
+            return "TJM"
+        if any(chave in orgao for chave in ("auditoria", "conselho de justica", "juizo militar")):
+            return "1o Grau"
+        return "Nao identificado"
+
+    if tribunal == "stm":
+        if grau_bucket:
+            return "STM" if grau_bucket == "2o Grau" else grau_bucket
+        if "superior tribunal militar" in orgao or orgao == "stm":
+            return "STM"
+        if "auditoria" in orgao:
+            return "1o Grau"
+        return "Nao identificado"
+
+    if tribunal.startswith("trt"):
+        if grau_bucket:
+            return grau_bucket
+        if any(chave in orgao for chave in ("tribunal regional do trabalho", "gabinete", "secao especializada")):
+            return "2o Grau"
+        if any(chave in orgao for chave in ("vara do trabalho", "posto avancado")):
+            return "1o Grau"
+        return "Nao identificado"
+
+    if tribunal.startswith("trf"):
+        if "turma regional de uniformizacao" in orgao or "tru" in orgao:
+            return "Turma Regional de Uniformizacao"
+        if "turma recursal" in orgao:
+            return "Turmas Recursais"
+        if "juizado especial" in orgao:
+            return "Juizado Especial"
+        if grau_bucket:
+            return grau_bucket
+        if any(chave in orgao for chave in ("tribunal regional federal", "corte especial", "secao", "turma")):
+            return "2o Grau"
+        if any(chave in orgao for chave in ("vara federal", "subsecao judiciaria")):
+            return "1o Grau"
+        return "Nao identificado"
+
+    if tribunal.startswith("tre"):
+        if "zona eleitoral" in orgao or grau_bucket == "1o Grau":
+            return "Zonas Eleitorais"
+        return "TRE"
+
+    if tribunal.startswith("tj"):
+        if "juizado especial da fazenda publica" in orgao:
+            return "Juizado Especial da Fazenda Publica"
+        if "turma estadual de uniformizacao" in orgao:
+            return "Turma Estadual de Uniformizacao"
+        if any(chave in orgao for chave in ("turma recursal", "colegio recursal")):
+            return "Turmas Recursais"
+        if "juizado especial" in orgao:
+            return "Juizado Especial"
+        if grau_bucket:
+            return grau_bucket
+        if any(chave in orgao for chave in ("camara", "orgao especial", "tribunal pleno", "secao civel", "secao criminal")):
+            return "2o Grau"
+        if any(chave in orgao for chave in ("vara", "foro", "comarca", "juizo")):
+            return "1o Grau"
+        return "Nao identificado"
+
+    return "Nao identificado"
+
+
+def add_estrutura_column(df_anpp: pd.DataFrame, tribunal_sigla: str) -> pd.DataFrame:
+    if df_anpp.empty:
+        return df_anpp.copy()
+
+    df_out = df_anpp.copy()
+    graus = df_out["grau"].tolist() if "grau" in df_out.columns else [None] * len(df_out)
+    orgaos = (
+        df_out["orgao_julgador"].tolist()
+        if "orgao_julgador" in df_out.columns
+        else [None] * len(df_out)
+    )
+    df_out["estrutura_tribunal"] = [
+        infer_estrutura_label(tribunal_sigla, grau, orgao)
+        for grau, orgao in zip(graus, orgaos)
+    ]
+    return df_out
+
+
+def filter_dataframe_by_estrutura(
+    df_anpp: pd.DataFrame,
+    tribunal_sigla: str,
+    estrutura_filtro: str,
+) -> pd.DataFrame:
+    df_out = add_estrutura_column(df_anpp, tribunal_sigla)
+    if df_out.empty or not estrutura_filtro or estrutura_filtro == "Todos":
+        return df_out
+    return df_out.loc[df_out["estrutura_tribunal"] == estrutura_filtro].copy()
+
+
 def normalize_numero_processo(raw_numero: str) -> str:
     numero = (raw_numero or "").strip()
     somente_digitos = "".join(ch for ch in numero if ch.isdigit())
@@ -1140,6 +1338,14 @@ def render() -> None:
             help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
         )
         st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
+        estrutura_info = get_estrutura_options(tribunal_sigla)
+        estrutura_filtro = st.selectbox(
+            "Estrutura do tribunal (opcional)",
+            options=estrutura_info["opcoes"],
+            index=0,
+            help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
+        )
+        st.caption(str(estrutura_info["observacao"]))
         classe_codigo = st.number_input(
             "Classe codigo",
             min_value=1,
@@ -1205,6 +1411,10 @@ def render() -> None:
                     modo_consulta="classe_ou_processo",
                 )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
+                if not usar_numero_processo:
+                    df_anpp = filter_dataframe_by_estrutura(df_anpp, tribunal_sigla, estrutura_filtro)
+                else:
+                    df_anpp = add_estrutura_column(df_anpp, tribunal_sigla)
                 top_100 = build_top_100(df_anpp)
                 mapa_size = min(max(int(size), 2000), MAX_PAGE_SIZE)
                 decisao_size = min(max(int(size), 400), 1200)
@@ -1231,6 +1441,7 @@ def render() -> None:
                         df_decisao = df_anpp.head(decisao_size).copy()
 
                     df_decisao = enrich_decision_proxy_dataframe(df_decisao)
+                    df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
                     qtd_decisao = len(df_decisao)
 
                     hits_mapa = fetch_hits(
@@ -1243,6 +1454,7 @@ def render() -> None:
                         modo_consulta="mapa_tribunal",
                     )
                     df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
+                    df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
                     top_codigos = top_codigos_dataframe(df_mapa)
                     top_classes = top_classes_dataframe(df_mapa)
                     top_assuntos = top_assuntos_dataframe(df_mapa)
@@ -1264,6 +1476,11 @@ def render() -> None:
                                 modo_consulta="classe_ou_processo",
                             )
                             df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
+                            df_mensal_candidato = filter_dataframe_by_estrutura(
+                                df_mensal_candidato,
+                                tribunal_sigla,
+                                estrutura_filtro,
+                            )
                             meses_candidato = len(monthly_counts(df_mensal_candidato, max_meses=12))
                             if meses_candidato > meses_base:
                                 df_mensal = df_mensal_candidato
@@ -1299,6 +1516,7 @@ def render() -> None:
         st.session_state["df_decisao"] = df_decisao
         st.session_state["qtd_decisao"] = qtd_decisao
         st.session_state["usar_numero_processo"] = usar_numero_processo
+        st.session_state["estrutura_filtro"] = estrutura_filtro
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -1315,6 +1533,7 @@ def render() -> None:
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
+    estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     total_assuntos = (
@@ -1329,6 +1548,12 @@ def render() -> None:
     c2.metric("Temas diferentes", str(total_assuntos))
     c3.metric("Orgaos julgadores", str(df_anpp["orgao_julgador"].nunique()))
 
+    if estrutura_filtro != "Todos" and not usar_numero_processo:
+        st.caption(
+            f"Filtro estrutural aplicado: {estrutura_filtro}. "
+            "Quando a API nao traz a estrutura de forma explicita, o app estima pelo grau e pelo nome do orgao julgador."
+        )
+
     if not assuntos_distintos.empty:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
@@ -1337,7 +1562,7 @@ def render() -> None:
     if usar_numero_processo:
         st.info(
             "A leitura decisoria por tema aparece nas consultas por classe/tema. "
-            "Quando voce busca por numero do processo, o app mostra o caso individual."
+            "Quando voce busca por numero do processo, o app mostra o caso individual e nao aplica o filtro estrutural para nao esconder o processo."
         )
     elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
         temas_decisao = assuntos_distintos_dataframe(df_decisao)
@@ -1441,9 +1666,12 @@ def render() -> None:
             titulo_mapa = f"Mapa automatico da sigla do tribunal ({sigla_mapa})"
         st.subheader(titulo_mapa)
         if qtd_mapa:
-            st.caption(
+            mensagem_mapa = (
                 f"Os rankings abaixo se referem a sigla do tribunal selecionado e usam uma amostra automatica de ate {qtd_mapa:,} registros recentes.".replace(",", ".")
             )
+            if estrutura_filtro != "Todos" and not usar_numero_processo:
+                mensagem_mapa += f" Filtro estrutural aplicado: {estrutura_filtro}."
+            st.caption(mensagem_mapa)
         else:
             st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
         col_codigos, col_classes, col_assuntos = st.columns(3)
