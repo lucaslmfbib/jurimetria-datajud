@@ -127,6 +127,37 @@ DECISAO_MOVIMENTO_HINTS = (
     "improvido",
     "prejudicad",
     "nao conhecid",
+    "ordem",
+    "seguranca",
+    "punibilidade",
+    "pronunc",
+    "despronunc",
+    "impronunc",
+    "receb",
+    "denuncia",
+    "queixa",
+    "acordo",
+    "concili",
+)
+
+MOVIMENTO_NAO_DECISORIO_HINTS = (
+    "conclus",
+    "juntad",
+    "certidao",
+    "expedid",
+    "expedicao",
+    "remetid",
+    "remessa",
+    "intimacao",
+    "publicacao",
+    "publicado",
+    "vista",
+    "decurso",
+    "recebimento em secretaria",
+    "recebidos os autos",
+    "redistribu",
+    "baixa",
+    "andamento",
 )
 
 
@@ -602,6 +633,8 @@ def is_decisive_movement_name(nome: str) -> bool:
     text = normalize_search_text(nome)
     if not text:
         return False
+    if any(hint in text for hint in MOVIMENTO_NAO_DECISORIO_HINTS):
+        return False
     return any(hint in text for hint in DECISAO_MOVIMENTO_HINTS)
 
 
@@ -625,9 +658,27 @@ def classify_decision_outcome(nome: str) -> str:
             "parcial provimento",
             "parcialmente provido",
             "provido em parte",
+            "conhecido e provido em parte",
         )
     ):
         return "Parcial provimento"
+    if any(
+        trecho in text
+        for trecho in (
+            "conhecido e provido",
+            "recurso conhecido e provido",
+        )
+    ):
+        return "Recurso provido"
+    if any(
+        trecho in text
+        for trecho in (
+            "conhecido e improvido",
+            "conhecido e nao provido",
+            "recurso conhecido e improvido",
+        )
+    ):
+        return "Recurso improvido"
     if any(trecho in text for trecho in ("improcedente", "improcedencia")):
         return "Improcedente"
     if any(
@@ -658,12 +709,56 @@ def classify_decision_outcome(nome: str) -> str:
         return "Homologacao de acordo"
     if "homolog" in text:
         return "Homologacao"
+    if any(
+        trecho in text
+        for trecho in (
+            "ordem concedida",
+            "seguranca concedida",
+            "concedida a seguranca",
+        )
+    ):
+        return "Ordem/Seguranca concedida"
+    if any(
+        trecho in text
+        for trecho in (
+            "ordem denegada",
+            "seguranca denegada",
+            "denegada a seguranca",
+        )
+    ):
+        return "Ordem/Seguranca denegada"
+    if any(trecho in text for trecho in ("absolvicao sumaria", "absolvido sumariamente")):
+        return "Absolvicao sumaria"
     if any(trecho in text for trecho in ("absolv", "absolvido", "absolver")):
         return "Absolvicao"
     if any(trecho in text for trecho in ("conden", "condenatoria")):
         return "Condenacao"
+    if any(
+        trecho in text
+        for trecho in (
+            "extinta a punibilidade",
+            "extincao da punibilidade",
+        )
+    ):
+        return "Extincao da punibilidade"
     if any(trecho in text for trecho in ("extint", "arquiv")):
         return "Extincao/Arquivamento"
+    if any(
+        trecho in text
+        for trecho in (
+            "recebida a denuncia",
+            "recebimento da denuncia",
+            "recebida a queixa",
+            "recebimento da queixa",
+        )
+    ):
+        return "Recebimento da denuncia/queixa"
+    if any(trecho in text for trecho in ("despronuncia", "despronunciado")):
+        return "Despronuncia"
+    if any(trecho in text for trecho in ("impronuncia", "impronunciado")):
+        return "Impronuncia"
+    if any(trecho in text for trecho in ("pronuncia", "pronunciado")):
+        return "Pronuncia"
     if any(trecho in text for trecho in ("deferid", "concedid")) and any(
         trecho in text for trecho in ("liminar", "tutela", "seguranca")
     ):
@@ -681,15 +776,35 @@ def extract_latest_decision_proxy(movimentos: Any) -> tuple[str, str, Any]:
     if not isinstance(movimentos, list):
         return "", "", pd.NaT
 
+    ultimo_movimento_nome = ""
+    ultimo_movimento_data = pd.NaT
+    fallback_nome = ""
+    fallback_data = pd.NaT
+
     for movimento in movimentos:
         if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
             continue
         nome = str(movimento[1] or "").strip()
-        if not nome or not is_decisive_movement_name(nome):
-            continue
-        categoria = classify_decision_outcome(nome) or "Outro movimento decisorio"
         data_hora = movimento[2] if len(movimento) > 2 else pd.NaT
-        return categoria, nome, data_hora
+        if not nome or not is_decisive_movement_name(nome):
+            if not ultimo_movimento_nome and nome:
+                ultimo_movimento_nome = nome
+                ultimo_movimento_data = data_hora
+            continue
+        categoria = classify_decision_outcome(nome)
+        if categoria:
+            return categoria, nome, data_hora
+        if not fallback_nome:
+            fallback_nome = nome
+            fallback_data = data_hora
+        if not ultimo_movimento_nome and nome:
+            ultimo_movimento_nome = nome
+            ultimo_movimento_data = data_hora
+
+    if fallback_nome:
+        return "Outro movimento decisorio", fallback_nome, fallback_data
+    if ultimo_movimento_nome:
+        return "", ultimo_movimento_nome, ultimo_movimento_data
 
     return "", "", pd.NaT
 
@@ -820,6 +935,57 @@ def decision_by_orgao_dataframe(df_anpp: pd.DataFrame, max_orgaos: int = 10) -> 
         )
 
     return pd.DataFrame(linhas)
+
+
+def decision_coverage_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    if df_anpp.empty:
+        return {
+            "total_processos": 0,
+            "com_desfecho": 0,
+            "com_movimento_final": 0,
+            "cobertura_desfecho": 0.0,
+            "cobertura_movimento": 0.0,
+        }
+
+    total = len(df_anpp)
+    com_desfecho = int(
+        df_anpp["decisao_categoria"].fillna("").astype(str).str.strip().ne("").sum()
+    ) if "decisao_categoria" in df_anpp.columns else 0
+    com_movimento_final = int(
+        df_anpp["decisao_movimento"].fillna("").astype(str).str.strip().ne("").sum()
+    ) if "decisao_movimento" in df_anpp.columns else 0
+    return {
+        "total_processos": total,
+        "com_desfecho": com_desfecho,
+        "com_movimento_final": com_movimento_final,
+        "cobertura_desfecho": (com_desfecho / total * 100) if total else 0.0,
+        "cobertura_movimento": (com_movimento_final / total * 100) if total else 0.0,
+    }
+
+
+def related_themes_dataframe(df_anpp: pd.DataFrame, tema: str, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "assuntos" not in df_anpp.columns or not tema:
+        return pd.DataFrame(columns=["tema_relacionado", "quantidade"])
+
+    relacionados: list[str] = []
+    for assuntos in df_anpp["assuntos"]:
+        if not isinstance(assuntos, list) or tema not in assuntos:
+            continue
+        for assunto in assuntos:
+            if not assunto or assunto == tema:
+                continue
+            relacionados.append(str(assunto).strip())
+
+    if not relacionados:
+        return pd.DataFrame(columns=["tema_relacionado", "quantidade"])
+
+    return (
+        pd.Series(relacionados)
+        .value_counts()
+        .head(max_items)
+        .rename_axis("tema_relacionado")
+        .reset_index(name="quantidade")
+    )
 
 
 @st.cache_data(show_spinner=False, ttl=1200)
@@ -1222,6 +1388,10 @@ def build_decision_theme_insights(
         linha = desfechos_tema.iloc[0]
         insights.append(
             f"O desfecho mais frequente para este tema foi `{linha['desfecho']}`, com {format_int_br(linha['quantidade'])} ocorrências."
+        )
+    else:
+        insights.append(
+            "Ainda nao foi possivel classificar automaticamente um desfecho predominante para este tema; por isso, vale olhar os movimentos finais mais frequentes."
         )
     if isinstance(movimentos_tema, pd.DataFrame) and not movimentos_tema.empty:
         linha = movimentos_tema.iloc[0]
@@ -1851,16 +2021,18 @@ def render() -> None:
             desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
             movimentos_tema = decision_movements_dataframe(df_tema_decisao)
             orgaos_tema = decision_by_orgao_dataframe(df_tema_decisao)
-
-            total_tema = len(df_tema_decisao)
-            total_com_desfecho = int(
-                df_tema_decisao["decisao_categoria"].fillna("").astype(str).str.strip().ne("").sum()
-            )
-            cobertura = (total_com_desfecho / total_tema * 100) if total_tema else 0.0
+            classes_tema = top_classes_dataframe(df_tema_decisao)
+            temas_relacionados = related_themes_dataframe(df_tema_decisao, tema_escolhido)
+            cobertura_tema = decision_coverage_summary(df_tema_decisao)
+            total_tema = int(cobertura_tema["total_processos"])
+            total_com_desfecho = int(cobertura_tema["com_desfecho"])
+            total_com_movimento = int(cobertura_tema["com_movimento_final"])
+            cobertura = float(cobertura_tema["cobertura_desfecho"])
+            cobertura_movimento = float(cobertura_tema["cobertura_movimento"])
             desfecho_predominante = (
                 str(desfechos_tema.iloc[0]["desfecho"])
                 if not desfechos_tema.empty
-                else "Sem leitura"
+                else "Sem classificacao automatica"
             )
             dias_decisao = pd.to_numeric(
                 df_tema_decisao["dias_ate_decisao_proxy"], errors="coerce"
@@ -1869,9 +2041,9 @@ def render() -> None:
 
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
-            d2.metric("Cobertura decisoria", f"{cobertura:.1f}%")
+            d2.metric("Desfecho classificado", f"{cobertura:.1f}%")
             d3.metric("Desfecho predominante", desfecho_predominante)
-            d4.metric("Mediana ate desfecho", mediana_dias)
+            d4.metric("Movimento final identificado", f"{cobertura_movimento:.1f}%")
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
                 total_tema,
@@ -1880,17 +2052,67 @@ def render() -> None:
                 movimentos_tema,
                 orgaos_tema,
             )
-
-            col_desfechos, col_movimentos = st.columns(2)
-            with col_desfechos:
-                st.markdown("**Desfechos mais frequentes no tema**")
-                st.dataframe(desfechos_tema, use_container_width=True, height=300)
-            with col_movimentos:
-                st.markdown("**Movimentos decisorios mais frequentes**")
-                st.dataframe(movimentos_tema, use_container_width=True, height=300)
-
-            st.markdown("**Como os orgaos julgadores estao decidindo este tema**")
-            st.dataframe(orgaos_tema, use_container_width=True, height=360)
+            tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Orgaos", "Contexto do tema"])
+            with tema_tabs[0]:
+                st.caption(
+                    "Aqui o app resume o tema escolhido com base nos processos da amostra e nos movimentos mais recentes encontrados."
+                )
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    st.markdown("**Cobertura da leitura**")
+                    st.markdown(
+                        f"- Processos com algum movimento final identificado: {format_int_br(total_com_movimento)} ({cobertura_movimento:.1f}%)"
+                    )
+                    st.markdown(
+                        f"- Processos com desfecho classificado automaticamente: {format_int_br(total_com_desfecho)} ({cobertura:.1f}%)"
+                    )
+                    st.markdown(f"- Mediana ate o desfecho identificado: {mediana_dias}")
+                with col_r2:
+                    st.markdown("**Sinal principal do tema**")
+                    st.markdown(f"- Desfecho predominante: {desfecho_predominante}")
+                    if not movimentos_tema.empty:
+                        st.markdown(
+                            f"- Movimento final mais frequente: {movimentos_tema.iloc[0]['movimento']}"
+                        )
+                    else:
+                        st.markdown("- Movimento final mais frequente: sem leitura")
+            with tema_tabs[1]:
+                col_desfechos, col_movimentos = st.columns(2)
+                with col_desfechos:
+                    st.markdown("**Desfechos classificados no tema**")
+                    if not desfechos_tema.empty:
+                        st.dataframe(desfechos_tema, use_container_width=True, height=300)
+                    else:
+                        st.info(
+                            "Ainda nao foi possivel classificar desfechos automaticamente para este tema nesta amostra. "
+                            "Use a tabela de movimentos finais ao lado como apoio."
+                        )
+                with col_movimentos:
+                    st.markdown("**Movimentos finais mais frequentes**")
+                    if not movimentos_tema.empty:
+                        st.dataframe(movimentos_tema, use_container_width=True, height=300)
+                    else:
+                        st.info("Nao encontrei movimentos finais suficientes para este tema.")
+            with tema_tabs[2]:
+                st.markdown("**Como os orgaos julgadores aparecem neste tema**")
+                if not orgaos_tema.empty:
+                    st.dataframe(orgaos_tema, use_container_width=True, height=360)
+                else:
+                    st.info("Nao encontrei dados suficientes por orgao julgador para este tema.")
+            with tema_tabs[3]:
+                col_classes, col_relacionados = st.columns(2)
+                with col_classes:
+                    st.markdown("**Classes mais frequentes neste tema**")
+                    if not classes_tema.empty:
+                        st.dataframe(classes_tema, use_container_width=True, height=300)
+                    else:
+                        st.info("Sem classes suficientes para este tema.")
+                with col_relacionados:
+                    st.markdown("**Temas relacionados na mesma amostra**")
+                    if not temas_relacionados.empty:
+                        st.dataframe(temas_relacionados, use_container_width=True, height=300)
+                    else:
+                        st.info("Nao encontrei outros temas recorrentes junto com este.")
         else:
             st.info("Nao encontrei temas suficientes para montar a leitura decisoria.")
 
