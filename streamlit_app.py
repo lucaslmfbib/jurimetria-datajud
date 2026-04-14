@@ -1790,6 +1790,10 @@ def render() -> None:
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     top_100_df = top_100_to_dataframe(top_100)
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
+    sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
+    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
+    tema_insights: list[str] = []
+    tema_escolhido = ""
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
@@ -1813,24 +1817,6 @@ def render() -> None:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
-
-    st.subheader("Insights automaticos")
-    st.caption(
-        "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
-        "mas nao substituem a leitura juridica do caso concreto."
-    )
-    sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
-    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
-    insight_tabs = st.tabs(
-        ["Amostra atual", "Mapa da sigla"] if map_insights else ["Amostra atual"]
-    )
-    with insight_tabs[0]:
-        for insight in sample_insights:
-            st.markdown(f"- {insight}")
-    if map_insights and len(insight_tabs) > 1:
-        with insight_tabs[1]:
-            for insight in map_insights:
-                st.markdown(f"- {insight}")
 
     if usar_numero_processo:
         st.info(
@@ -1886,17 +1872,14 @@ def render() -> None:
             d2.metric("Cobertura decisoria", f"{cobertura:.1f}%")
             d3.metric("Desfecho predominante", desfecho_predominante)
             d4.metric("Mediana ate desfecho", mediana_dias)
-
-            with st.expander("Insights automaticos deste tema", expanded=True):
-                for insight in build_decision_theme_insights(
-                    tema_escolhido,
-                    total_tema,
-                    total_com_desfecho,
-                    desfechos_tema,
-                    movimentos_tema,
-                    orgaos_tema,
-                ):
-                    st.markdown(f"- {insight}")
+            tema_insights = build_decision_theme_insights(
+                tema_escolhido,
+                total_tema,
+                total_com_desfecho,
+                desfechos_tema,
+                movimentos_tema,
+                orgaos_tema,
+            )
 
             col_desfechos, col_movimentos = st.columns(2)
             with col_desfechos:
@@ -1968,6 +1951,34 @@ def render() -> None:
         with col_assuntos:
             st.markdown("**Top 10 assuntos**")
             st.dataframe(top_assuntos, use_container_width=True, height=320)
+
+    st.subheader("Resumos automaticos")
+    st.caption(
+        "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
+        "mas nao substituem a leitura juridica do caso concreto."
+    )
+    abas_resumo = ["Amostra atual"]
+    if map_insights:
+        abas_resumo.append("Mapa da sigla")
+    if tema_insights:
+        abas_resumo.append("Tema selecionado")
+    resumo_tabs = st.tabs(abas_resumo)
+    aba_idx = 0
+    with resumo_tabs[aba_idx]:
+        for insight in sample_insights:
+            st.markdown(f"- {insight}")
+    aba_idx += 1
+    if map_insights:
+        with resumo_tabs[aba_idx]:
+            for insight in map_insights:
+                st.markdown(f"- {insight}")
+        aba_idx += 1
+    if tema_insights:
+        with resumo_tabs[aba_idx]:
+            if tema_escolhido:
+                st.caption(f"Leitura guiada do tema: {tema_escolhido}")
+            for insight in tema_insights:
+                st.markdown(f"- {insight}")
 
     st.subheader("Downloads")
     csv_bytes = df_anpp.to_csv(index=False).encode("utf-8")
