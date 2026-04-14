@@ -1837,6 +1837,35 @@ def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> Any:
     return fig
 
 
+def fig_desfechos_tema(desfechos_tema: pd.DataFrame) -> Any:
+    plt = get_plt()
+    if desfechos_tema.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.set_title("Distribuicao dos desfechos do tema")
+        ax.text(0.5, 0.5, "Sem desfechos classificados para este tema.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = desfechos_tema.copy()
+    base["desfecho_curto"] = base["desfecho"].astype(str).apply(
+        lambda x: x if len(x) <= 32 else x[:32] + "..."
+    )
+    fig, ax = plt.subplots(figsize=(9, 4.2))
+    ax.barh(base["desfecho_curto"], base["quantidade"], color="#E15759", alpha=0.9)
+    ax.invert_yaxis()
+    ax.set_xlabel("Quantidade")
+    ax.set_ylabel("Desfecho")
+    ax.set_title("Distribuicao dos desfechos do tema")
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+
+    max_valor = int(pd.to_numeric(base["quantidade"], errors="coerce").fillna(0).max())
+    for i, valor in enumerate(base["quantidade"]):
+        ax.text(float(valor) + max(max_valor * 0.01, 0.5), i, str(int(valor)), va="center", fontsize=9)
+
+    fig.tight_layout()
+    return fig
+
+
 def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
     plt = get_plt()
     df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
@@ -2281,6 +2310,7 @@ def render() -> None:
                 with col_desfechos:
                     st.markdown("**Desfechos classificados no tema**")
                     if not desfechos_tema.empty:
+                        st.pyplot(fig_desfechos_tema(desfechos_tema), clear_figure=True)
                         st.dataframe(desfechos_tema, use_container_width=True, height=300)
                     else:
                         st.info(
