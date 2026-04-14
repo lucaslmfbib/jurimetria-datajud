@@ -1061,6 +1061,181 @@ def top_orgaos_julgadores_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) 
     return top
 
 
+def format_int_br(value: Any) -> str:
+    try:
+        return f"{int(value):,}".replace(",", ".")
+    except Exception:
+        return str(value)
+
+
+def build_sample_insights(
+    df_anpp: pd.DataFrame,
+    df_mensal: pd.DataFrame,
+    top_orgaos_df: pd.DataFrame,
+    top_100_df: pd.DataFrame,
+) -> list[str]:
+    if df_anpp.empty:
+        return ["Sem dados suficientes para gerar insights automáticos da amostra."]
+
+    insights: list[str] = []
+    total_registros = len(df_anpp)
+
+    if isinstance(top_orgaos_df, pd.DataFrame) and not top_orgaos_df.empty:
+        top_orgao = top_orgaos_df.iloc[0]
+        insights.append(
+            f"O órgão julgador mais frequente na amostra é `{top_orgao['orgao_julgador']}`, com "
+            f"{format_int_br(top_orgao['quantidade'])} registros ({top_orgao['participacao']} da amostra)."
+        )
+        if len(top_orgaos_df) >= 3:
+            top_3 = int(pd.to_numeric(top_orgaos_df.head(3)["quantidade"], errors="coerce").fillna(0).sum())
+            pct_top_3 = (top_3 / total_registros * 100) if total_registros else 0.0
+            leitura = "concentrada" if pct_top_3 >= 50 else "mais distribuída"
+            insights.append(
+                f"Os 3 órgãos mais frequentes somam {format_int_br(top_3)} registros ({pct_top_3:.1f}% da amostra), "
+                f"o que sugere uma base {leitura} em poucos órgãos julgadores."
+            )
+
+    datas = df_anpp["data_ajuizamento"].dropna() if "data_ajuizamento" in df_anpp.columns else pd.Series(dtype="datetime64[ns]")
+    if not datas.empty:
+        horas = datas.dt.hour.value_counts().sort_index()
+        if not horas.empty:
+            hora_pico = int(horas.idxmax())
+            qtd_hora_pico = int(horas.max())
+            pct_hora_pico = (qtd_hora_pico / len(datas) * 100) if len(datas) else 0.0
+            insights.append(
+                f"O pico de ajuizamentos ocorreu por volta das {hora_pico:02d}h, com "
+                f"{format_int_br(qtd_hora_pico)} registros ({pct_hora_pico:.1f}% dos registros com data)."
+            )
+            expediente = int(horas[(horas.index >= 8) & (horas.index < 19)].sum())
+            fora_expediente = int(horas.sum() - expediente)
+            pct_expediente = (expediente / int(horas.sum()) * 100) if int(horas.sum()) else 0.0
+            if expediente >= fora_expediente:
+                insights.append(
+                    f"A maior parte dos ajuizamentos ocorreu dentro do horário comercial, com {pct_expediente:.1f}% dos registros com data."
+                )
+            else:
+                insights.append(
+                    f"A maior parte dos ajuizamentos ocorreu fora do horário comercial, com {(100 - pct_expediente):.1f}% dos registros com data."
+                )
+
+    serie_mensal = monthly_counts(df_mensal, max_meses=12)
+    if not serie_mensal.empty:
+        pico_idx = serie_mensal.idxmax()
+        pico_val = int(serie_mensal.max())
+        insights.append(
+            f"Nos últimos {len(serie_mensal)} meses disponíveis, o pico foi em {pico_idx.strftime('%m/%Y')}, "
+            f"com {format_int_br(pico_val)} ajuizamentos."
+        )
+        if len(serie_mensal) >= 2:
+            ultimo = int(serie_mensal.iloc[-1])
+            penultimo = int(serie_mensal.iloc[-2])
+            if penultimo > 0:
+                variacao = ((ultimo - penultimo) / penultimo) * 100
+                if variacao > 0:
+                    insights.append(
+                        f"O mês mais recente ficou {variacao:.1f}% acima do mês anterior."
+                    )
+                elif variacao < 0:
+                    insights.append(
+                        f"O mês mais recente ficou {abs(variacao):.1f}% abaixo do mês anterior."
+                    )
+                else:
+                    insights.append("O mês mais recente ficou no mesmo patamar do mês anterior.")
+
+    top_classe = top_classes_dataframe(df_anpp, max_items=1)
+    if not top_classe.empty:
+        classe = str(top_classe.iloc[0]["classe"]).strip()
+        quantidade = int(top_classe.iloc[0]["quantidade"])
+        insights.append(
+            f"A classe processual mais frequente na amostra é `{classe}`, com {format_int_br(quantidade)} registros."
+        )
+
+    top_assunto = top_assuntos_dataframe(df_anpp, max_items=1)
+    if not top_assunto.empty:
+        assunto = str(top_assunto.iloc[0]["assunto"]).strip()
+        quantidade = int(top_assunto.iloc[0]["quantidade"])
+        insights.append(
+            f"O assunto mais recorrente é `{assunto}`, com {format_int_br(quantidade)} ocorrências na amostra."
+        )
+
+    if (
+        isinstance(top_100_df, pd.DataFrame)
+        and not top_100_df.empty
+        and {"municipio", "orgao_julgador", "quantidade"}.issubset(top_100_df.columns)
+    ):
+        top_linha = top_100_df.iloc[0]
+        insights.append(
+            f"A combinação município/órgão mais frequente é `{top_linha['municipio']} / {top_linha['orgao_julgador']}`, "
+            f"com {format_int_br(top_linha['quantidade'])} registros."
+        )
+
+    return insights[:6]
+
+
+def build_map_insights(
+    top_codigos: pd.DataFrame,
+    top_classes: pd.DataFrame,
+    top_assuntos: pd.DataFrame,
+    qtd_mapa: int,
+) -> list[str]:
+    insights: list[str] = []
+    if qtd_mapa:
+        insights.append(
+            f"O mapa automático foi montado com até {format_int_br(qtd_mapa)} registros recentes da sigla selecionada."
+        )
+    if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
+        linha = top_codigos.iloc[0]
+        insights.append(
+            f"O código mais frequente no mapa da sigla é `{linha['classe_codigo']}`, ligado à classe `{linha['classe']}`, "
+            f"com {format_int_br(linha['quantidade'])} ocorrências."
+        )
+    if isinstance(top_classes, pd.DataFrame) and not top_classes.empty:
+        linha = top_classes.iloc[0]
+        insights.append(
+            f"A classe mais frequente no mapa da sigla é `{linha['classe']}`, com {format_int_br(linha['quantidade'])} registros."
+        )
+    if isinstance(top_assuntos, pd.DataFrame) and not top_assuntos.empty:
+        linha = top_assuntos.iloc[0]
+        insights.append(
+            f"O assunto mais recorrente no mapa da sigla é `{linha['assunto']}`, com {format_int_br(linha['quantidade'])} ocorrências."
+        )
+    return insights
+
+
+def build_decision_theme_insights(
+    tema: str,
+    total_tema: int,
+    total_com_desfecho: int,
+    desfechos_tema: pd.DataFrame,
+    movimentos_tema: pd.DataFrame,
+    orgaos_tema: pd.DataFrame,
+) -> list[str]:
+    if total_tema <= 0:
+        return ["Sem dados suficientes para gerar insights automáticos deste tema."]
+
+    insights: list[str] = []
+    cobertura = (total_com_desfecho / total_tema * 100) if total_tema else 0.0
+    insights.append(
+        f"No tema `{tema}`, o app encontrou {format_int_br(total_tema)} processos na amostra, com leitura decisória em {cobertura:.1f}% deles."
+    )
+    if isinstance(desfechos_tema, pd.DataFrame) and not desfechos_tema.empty:
+        linha = desfechos_tema.iloc[0]
+        insights.append(
+            f"O desfecho mais frequente para este tema foi `{linha['desfecho']}`, com {format_int_br(linha['quantidade'])} ocorrências."
+        )
+    if isinstance(movimentos_tema, pd.DataFrame) and not movimentos_tema.empty:
+        linha = movimentos_tema.iloc[0]
+        insights.append(
+            f"O movimento decisório mais comum para este tema foi `{linha['movimento']}`, com {format_int_br(linha['quantidade'])} registros."
+        )
+    if isinstance(orgaos_tema, pd.DataFrame) and not orgaos_tema.empty:
+        linha = orgaos_tema.iloc[0]
+        insights.append(
+            f"O órgão com mais processos deste tema na amostra foi `{linha['orgao_julgador']}`; nele, o desfecho predominante foi `{linha['desfecho_predominante']}`."
+        )
+    return insights
+
+
 def top_codigos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
     if df_anpp.empty or "classe_codigo" not in df_anpp.columns:
         return pd.DataFrame(columns=["classe_codigo", "classe", "quantidade"])
@@ -1613,6 +1788,8 @@ def render() -> None:
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     df_view = dataframe_for_display(df_anpp, max_rows=400)
+    top_100_df = top_100_to_dataframe(top_100)
+    top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     total_assuntos = (
         df_anpp["assuntos"].explode().dropna().astype(str).nunique()
@@ -1636,6 +1813,24 @@ def render() -> None:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
+
+    st.subheader("Insights automaticos")
+    st.caption(
+        "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
+        "mas nao substituem a leitura juridica do caso concreto."
+    )
+    sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
+    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
+    insight_tabs = st.tabs(
+        ["Amostra atual", "Mapa da sigla"] if map_insights else ["Amostra atual"]
+    )
+    with insight_tabs[0]:
+        for insight in sample_insights:
+            st.markdown(f"- {insight}")
+    if map_insights and len(insight_tabs) > 1:
+        with insight_tabs[1]:
+            for insight in map_insights:
+                st.markdown(f"- {insight}")
 
     if usar_numero_processo:
         st.info(
@@ -1692,6 +1887,17 @@ def render() -> None:
             d3.metric("Desfecho predominante", desfecho_predominante)
             d4.metric("Mediana ate desfecho", mediana_dias)
 
+            with st.expander("Insights automaticos deste tema", expanded=True):
+                for insight in build_decision_theme_insights(
+                    tema_escolhido,
+                    total_tema,
+                    total_com_desfecho,
+                    desfechos_tema,
+                    movimentos_tema,
+                    orgaos_tema,
+                ):
+                    st.markdown(f"- {insight}")
+
             col_desfechos, col_movimentos = st.columns(2)
             with col_desfechos:
                 st.markdown("**Desfechos mais frequentes no tema**")
@@ -1710,9 +1916,7 @@ def render() -> None:
     st.dataframe(df_view, use_container_width=True, height=350)
 
     st.subheader("Top 100 por municipio e orgao julgador")
-    top_100_df = top_100_to_dataframe(top_100)
     st.dataframe(top_100_df, use_container_width=True, height=350)
-    top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
 
     col_a, col_b = st.columns(2)
     with col_a:
