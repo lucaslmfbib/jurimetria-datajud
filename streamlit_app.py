@@ -1,3 +1,4 @@
+from datetime import date, datetime, time as dt_time
 import io
 import importlib
 import os
@@ -588,6 +589,52 @@ def normalize_numero_processo(raw_numero: str) -> str:
     return somente_digitos or numero
 
 
+def coerce_date_value(value: Any) -> Any:
+    if value in (None, "", ()):
+        return None
+    if isinstance(value, tuple):
+        if not value:
+            return None
+        value = value[0]
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return pd.to_datetime(value).date()
+    except Exception:
+        return None
+
+
+def build_data_ajuizamento_range(
+    data_inicio: Any = None,
+    data_fim: Any = None,
+) -> dict[str, Any]:
+    inicio = coerce_date_value(data_inicio)
+    fim = coerce_date_value(data_fim)
+    if not inicio and not fim:
+        return {}
+
+    faixa: dict[str, Any] = {}
+    if inicio:
+        faixa["gte"] = datetime.combine(inicio, dt_time.min).isoformat()
+    if fim:
+        faixa["lte"] = datetime.combine(fim, dt_time.max).isoformat()
+    return {"range": {"dataAjuizamento": faixa}}
+
+
+def format_periodo_aplicado(data_inicio: Any = None, data_fim: Any = None) -> str:
+    inicio = coerce_date_value(data_inicio)
+    fim = coerce_date_value(data_fim)
+    if inicio and fim:
+        return f"{inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
+    if inicio:
+        return f"a partir de {inicio.strftime('%d/%m/%Y')}"
+    if fim:
+        return f"ate {fim.strftime('%d/%m/%Y')}"
+    return ""
+
+
 def to_sao_paulo_datetime(value: Any) -> Any:
     if value is None or value == "":
         return pd.NaT
@@ -1074,16 +1121,28 @@ def fetch_hits(
     size: int,
     url: str,
     numero_processo: str = "",
+    data_inicio: Any = None,
+    data_fim: Any = None,
     incluir_movimentos: bool = False,
     modo_consulta: str = "classe_ou_processo",
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
+    filtros: list[dict[str, Any]] = []
     if numero_limpo:
-        query: dict[str, Any] = {"match": {"numeroProcesso": numero_limpo}}
+        filtros.append({"match": {"numeroProcesso": numero_limpo}})
     elif modo_consulta == "mapa_tribunal":
-        query = {"match_all": {}}
+        pass
     else:
-        query = {"match": {"classe.codigo": classe_codigo}}
+        filtros.append({"match": {"classe.codigo": classe_codigo}})
+
+    filtro_data = build_data_ajuizamento_range(data_inicio=data_inicio, data_fim=data_fim)
+    if filtro_data:
+        filtros.append(filtro_data)
+
+    if filtros:
+        query: dict[str, Any] = {"bool": {"filter": filtros}}
+    else:
+        query = {"match_all": {}}
 
     campos_source = [
         "numeroProcesso",
@@ -1863,6 +1922,30 @@ def render() -> None:
             placeholder="Ex.: 50012345620248130024",
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
         )
+        aplicar_periodo = st.checkbox(
+            "Filtrar por periodo de ajuizamento",
+            value=False,
+            help="Limita a amostra a um intervalo de datas de ajuizamento.",
+        )
+        data_inicio = None
+        data_fim = None
+        if aplicar_periodo:
+            hoje = date.today()
+            inicio_padrao = date(hoje.year, 1, 1)
+            col_data_inicio, col_data_fim = st.columns(2)
+            with col_data_inicio:
+                data_inicio = st.date_input(
+                    "Data inicial",
+                    value=inicio_padrao,
+                )
+            with col_data_fim:
+                data_fim = st.date_input(
+                    "Data final",
+                    value=hoje,
+                )
+            periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
+            if periodo_legivel:
+                st.caption(f"Periodo aplicado: {periodo_legivel}")
         st.caption(
             "Ao executar a consulta, o app tambem monta automaticamente um mapa da sigla com os codigos, classes e assuntos mais comuns."
         )
@@ -1898,17 +1981,27 @@ def render() -> None:
         if not api_key:
             st.error("API Key ausente. Configure DATAJUD_API_KEY no servidor.")
             return
+        if aplicar_periodo:
+            inicio_validado = coerce_date_value(data_inicio)
+            fim_validado = coerce_date_value(data_fim)
+            if inicio_validado and fim_validado and inicio_validado > fim_validado:
+                st.error("A data inicial nao pode ser maior que a data final.")
+                return
 
         with st.spinner("Buscando dados no DataJud..."):
             started = time.perf_counter()
             try:
                 usar_numero_processo = bool(normalize_numero_processo(numero_processo))
+                data_inicio_consulta = None if usar_numero_processo else data_inicio
+                data_fim_consulta = None if usar_numero_processo else data_fim
                 hits = fetch_hits(
                     api_key=api_key,
                     classe_codigo=int(classe_codigo),
                     size=int(size),
                     url=url,
                     numero_processo=numero_processo,
+                    data_inicio=data_inicio_consulta,
+                    data_fim=data_fim_consulta,
                     incluir_movimentos=not modo_rapido,
                     modo_consulta="classe_ou_processo",
                 )
@@ -1935,6 +2028,8 @@ def render() -> None:
                             size=decisao_size,
                             url=url,
                             numero_processo="",
+                            data_inicio=data_inicio_consulta,
+                            data_fim=data_fim_consulta,
                             incluir_movimentos=True,
                             modo_consulta="classe_ou_processo",
                         )
@@ -1952,6 +2047,8 @@ def render() -> None:
                         size=mapa_size,
                         url=url,
                         numero_processo="",
+                        data_inicio=data_inicio_consulta,
+                        data_fim=data_fim_consulta,
                         incluir_movimentos=False,
                         modo_consulta="mapa_tribunal",
                     )
@@ -1974,6 +2071,8 @@ def render() -> None:
                                 size=10000,
                                 url=url,
                                 numero_processo="",
+                                data_inicio=data_inicio_consulta,
+                                data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
                                 modo_consulta="classe_ou_processo",
                             )
@@ -2019,6 +2118,8 @@ def render() -> None:
         st.session_state["qtd_decisao"] = qtd_decisao
         st.session_state["usar_numero_processo"] = usar_numero_processo
         st.session_state["estrutura_filtro"] = estrutura_filtro
+        st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
+        st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -2036,6 +2137,8 @@ def render() -> None:
     qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
+    periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
+    periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     top_100_df = top_100_to_dataframe(top_100)
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
@@ -2060,6 +2163,12 @@ def render() -> None:
         st.caption(
             f"Filtro estrutural aplicado: {format_estrutura_option(estrutura_filtro)}. "
             "Quando a API nao traz a estrutura de forma explicita, o app estima pelo grau e pelo nome do orgao julgador."
+        )
+    if periodo_aplicado:
+        st.caption(f"Filtro temporal aplicado no ajuizamento: {periodo_aplicado}.")
+    elif periodo_ignorado_numero:
+        st.caption(
+            "O filtro temporal foi ignorado porque a consulta por numero do processo prioriza o caso exato."
         )
 
     if not assuntos_distintos.empty:
@@ -2251,6 +2360,8 @@ def render() -> None:
             )
             if estrutura_filtro != "Todos" and not usar_numero_processo:
                 mensagem_mapa += f" Filtro estrutural aplicado: {format_estrutura_option(estrutura_filtro)}."
+            if periodo_aplicado:
+                mensagem_mapa += f" Periodo de ajuizamento: {periodo_aplicado}."
             st.caption(mensagem_mapa)
         else:
             st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
