@@ -1037,6 +1037,30 @@ def top_100_to_dataframe(top_100: pd.Series) -> pd.DataFrame:
     return top_100_df
 
 
+def top_orgaos_julgadores_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns:
+        return pd.DataFrame(columns=["orgao_julgador", "quantidade", "participacao"])
+
+    orgaos = df_anpp["orgao_julgador"].fillna("").astype(str).str.strip()
+    orgaos = orgaos[orgaos != ""]
+    if orgaos.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "quantidade", "participacao"])
+
+    total = int(len(orgaos))
+    top = (
+        orgaos.value_counts()
+        .head(max_items)
+        .rename_axis("orgao_julgador")
+        .reset_index(name="quantidade")
+    )
+    top["participacao"] = (
+        (top["quantidade"] / total * 100)
+        .round(1)
+        .map(lambda valor: f"{valor:.1f}%")
+    )
+    return top
+
+
 def top_codigos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
     if df_anpp.empty or "classe_codigo" not in df_anpp.columns:
         return pd.DataFrame(columns=["classe_codigo", "classe", "quantidade"])
@@ -1333,6 +1357,7 @@ def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> Any:
 def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
     plt = get_plt()
     df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
+    top_orgaos_julgadores_dataframe(df).to_csv("top_orgaos_julgadores_datajud.csv", index=False)
 
     with open("movimentos_datajud.txt", "w") as file:
         file.write("Arquivo gerado pelo Streamlit.")
@@ -1344,10 +1369,6 @@ def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
     fig1 = fig_horario(df)
     fig1.savefig("horario_datajud.jpg")
     plt.close(fig1)
-
-    fig2 = fig_pizza(df)
-    fig2.savefig("pizza_expediente_datajud.jpg")
-    plt.close(fig2)
 
     fig3 = fig_mensal(df)
     fig3.savefig("ajuizamentos_mensais_datajud.jpg")
@@ -1691,14 +1712,16 @@ def render() -> None:
     st.subheader("Top 100 por municipio e orgao julgador")
     top_100_df = top_100_to_dataframe(top_100)
     st.dataframe(top_100_df, use_container_width=True, height=350)
+    top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
 
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Horario")
         st.pyplot(fig_horario(df_anpp), clear_figure=True)
     with col_b:
-        st.subheader("Expediente x fora")
-        st.pyplot(fig_pizza(df_anpp), clear_figure=True)
+        st.subheader("Top 10 orgaos julgadores")
+        st.caption("Mostra os orgaos que mais aparecem na amostra atual, com a participacao de cada um no total consultado.")
+        st.dataframe(top_orgaos_df, use_container_width=True, height=320)
 
     st.subheader("Ajuizamentos mensais")
     st.pyplot(fig_mensal(df_mensal), clear_figure=True)
