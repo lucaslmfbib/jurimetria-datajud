@@ -2309,6 +2309,7 @@ def render() -> None:
                 col_desfechos, col_movimentos = st.columns(2)
                 with col_desfechos:
                     st.markdown("**Desfechos classificados no tema**")
+                    st.caption("Mostra como os desfechos classificados se distribuem neste tema.")
                     if not desfechos_tema.empty:
                         st.pyplot(fig_desfechos_tema(desfechos_tema), clear_figure=True)
                         st.dataframe(desfechos_tema, use_container_width=True, height=300)
@@ -2319,12 +2320,14 @@ def render() -> None:
                         )
                 with col_movimentos:
                     st.markdown("**Movimentos finais mais frequentes**")
+                    st.caption("Mostra o movimento final mais recorrente, mesmo quando nao ha desfecho classificado.")
                     if not movimentos_tema.empty:
                         st.dataframe(movimentos_tema, use_container_width=True, height=300)
                     else:
                         st.info("Nao encontrei movimentos finais suficientes para este tema.")
             with tema_tabs[2]:
                 st.markdown("**Como os orgaos julgadores aparecem neste tema**")
+                st.caption("Compara volume, cobertura e sinal principal por orgao julgador neste tema.")
                 if not orgaos_tema.empty:
                     st.dataframe(orgaos_tema, use_container_width=True, height=360)
                 else:
@@ -2333,12 +2336,14 @@ def render() -> None:
                 col_classes, col_relacionados = st.columns(2)
                 with col_classes:
                     st.markdown("**Classes mais frequentes neste tema**")
+                    st.caption("Mostra em quais classes processuais este tema mais aparece.")
                     if not classes_tema.empty:
                         st.dataframe(classes_tema, use_container_width=True, height=300)
                     else:
                         st.info("Sem classes suficientes para este tema.")
                 with col_relacionados:
                     st.markdown("**Temas relacionados na mesma amostra**")
+                    st.caption("Mostra outros temas que costumam aparecer junto deste na mesma amostra.")
                     if not temas_relacionados.empty:
                         st.dataframe(temas_relacionados, use_container_width=True, height=300)
                     else:
@@ -2351,11 +2356,13 @@ def render() -> None:
     st.dataframe(df_view, use_container_width=True, height=350)
 
     st.subheader("Top 100 por municipio e orgao julgador")
+    st.caption("Lista as combinacoes de municipio e orgao julgador que mais aparecem na amostra.")
     st.dataframe(top_100_df, use_container_width=True, height=350)
 
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Horario")
+        st.caption("Mostra em quais horas houve mais ajuizamentos na amostra consultada.")
         st.pyplot(fig_horario(df_anpp), clear_figure=True)
     with col_b:
         st.subheader("Top 10 orgaos julgadores")
@@ -2363,17 +2370,20 @@ def render() -> None:
         st.dataframe(top_orgaos_df, use_container_width=True, height=320)
 
     st.subheader("Ajuizamentos mensais")
+    st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
     st.pyplot(fig_mensal(df_mensal), clear_figure=True)
 
     if mostrar_graficos_avancados:
         st.subheader("Fluxo mensal")
-        st.caption("Atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
+        st.caption("Compara ajuizados e atualizados por mes; atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
         st.pyplot(fig_fluxo_mensal(df_mensal), clear_figure=True)
 
         st.subheader("Tempo de tramitacao por orgao")
+        st.caption("Compara a distribuicao do tempo entre ajuizamento e ultima atualizacao nos principais orgaos.")
         st.pyplot(fig_tempo_tramitacao_boxplot(df_anpp), clear_figure=True)
 
         st.subheader("Heatmap dia x hora")
+        st.caption("Mostra em que dias da semana e horarios a amostra se concentra.")
         st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
     else:
         st.caption("Graficos avancados ocultos para resposta mais rapida. Ative na barra lateral.")
