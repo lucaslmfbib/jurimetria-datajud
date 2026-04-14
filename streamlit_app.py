@@ -988,6 +988,85 @@ def related_themes_dataframe(df_anpp: pd.DataFrame, tema: str, max_items: int = 
     )
 
 
+def theme_overview_dataframe(df_anpp: pd.DataFrame, max_items: int = 15) -> pd.DataFrame:
+    if df_anpp.empty or "assuntos" not in df_anpp.columns:
+        return pd.DataFrame(
+            columns=[
+                "tema",
+                "processos",
+                "com_desfecho",
+                "cobertura_desfecho",
+                "com_movimento_final",
+                "cobertura_movimento",
+            ]
+        )
+
+    linhas: list[dict[str, Any]] = []
+    for _, row in df_anpp.iterrows():
+        assuntos = row.get("assuntos", [])
+        if not isinstance(assuntos, list):
+            continue
+        temas = []
+        for assunto in assuntos:
+            tema = str(assunto or "").strip()
+            if tema:
+                temas.append(tema)
+        temas = list(dict.fromkeys(temas))
+        if not temas:
+            continue
+        tem_desfecho = bool(str(row.get("decisao_categoria", "") or "").strip())
+        tem_movimento = bool(str(row.get("decisao_movimento", "") or "").strip())
+        for tema in temas:
+            linhas.append(
+                {
+                    "tema": tema,
+                    "processos": 1,
+                    "com_desfecho": 1 if tem_desfecho else 0,
+                    "com_movimento_final": 1 if tem_movimento else 0,
+                }
+            )
+
+    if not linhas:
+        return pd.DataFrame(
+            columns=[
+                "tema",
+                "processos",
+                "com_desfecho",
+                "cobertura_desfecho",
+                "com_movimento_final",
+                "cobertura_movimento",
+            ]
+        )
+
+    overview = (
+        pd.DataFrame(linhas)
+        .groupby("tema", as_index=False)
+        .sum()
+        .sort_values(["processos", "com_desfecho"], ascending=[False, False])
+        .head(max_items)
+    )
+    overview["cobertura_desfecho"] = (
+        (overview["com_desfecho"] / overview["processos"] * 100)
+        .round(1)
+        .map(lambda valor: f"{valor:.1f}%")
+    )
+    overview["cobertura_movimento"] = (
+        (overview["com_movimento_final"] / overview["processos"] * 100)
+        .round(1)
+        .map(lambda valor: f"{valor:.1f}%")
+    )
+    return overview[
+        [
+            "tema",
+            "processos",
+            "com_desfecho",
+            "cobertura_desfecho",
+            "com_movimento_final",
+            "cobertura_movimento",
+        ]
+    ]
+
+
 @st.cache_data(show_spinner=False, ttl=1200)
 def fetch_hits(
     api_key: str,
@@ -1995,6 +2074,7 @@ def render() -> None:
         )
     elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
         temas_decisao = assuntos_distintos_dataframe(df_decisao)
+        temas_overview = theme_overview_dataframe(df_decisao)
         st.subheader("Leitura decisoria por tema")
         st.caption(
             "Esta leitura usa o ultimo movimento decisorio identificado em cada processo como proxy do desfecho. "
@@ -2009,14 +2089,25 @@ def render() -> None:
         if tema_opcoes:
             tema_escolhido = st.selectbox(
                 "Tema para analisar",
-                options=tema_opcoes,
+                options=["Todos os temas"] + tema_opcoes,
                 index=0,
-                help="Escolha um tema encontrado na amostra com movimentos completos.",
+                help="Escolha um tema especifico ou volte para a visao geral de todos os temas.",
             )
         else:
             tema_escolhido = ""
 
-        if tema_escolhido:
+        if tema_escolhido == "Todos os temas":
+            total_temas_mapeados = int(len(temas_decisao))
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Temas mapeados", format_int_br(total_temas_mapeados))
+            d2.metric("Temas na visao geral", format_int_br(len(temas_overview)))
+            d3.metric("Base com movimentos", f"{qtd_decisao:,}".replace(",", "."))
+            st.caption(
+                "Selecione um tema especifico no filtro acima para ver desfechos, movimentos finais, orgaos e contexto daquele tema."
+            )
+            st.markdown("**Visao geral dos temas da amostra**")
+            st.dataframe(temas_overview, use_container_width=True, height=360)
+        elif tema_escolhido:
             df_tema_decisao = filter_dataframe_by_tema(df_decisao, tema_escolhido)
             desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
             movimentos_tema = decision_movements_dataframe(df_tema_decisao)
