@@ -161,6 +161,8 @@ MOVIMENTO_NAO_DECISORIO_HINTS = (
     "andamento",
 )
 
+CATEGORIA_NAO_CLASSIFICADA = "Decisao identificada, mas nao classificada"
+
 
 @st.cache_resource(show_spinner=False)
 def get_plt() -> Any:
@@ -693,6 +695,42 @@ def classify_decision_outcome(nome: str) -> str:
     if any(
         trecho in text
         for trecho in (
+            "acordo de nao persecu",
+            "anpp",
+            "nao persecucao penal",
+        )
+    ):
+        if any(
+            trecho in text
+            for trecho in (
+                "nao homolog",
+                "não homolog",
+                "rejeit",
+                "recus",
+                "inadmit",
+                "nao admit",
+                "não admit",
+                "indefer",
+            )
+        ):
+            return "ANPP nao homologado/rejeitado"
+        if any(
+            trecho in text
+            for trecho in (
+                "homolog",
+                "receb",
+                "admit",
+                "defer",
+                "aprov",
+                "celebr",
+                "ratific",
+            )
+        ):
+            return "ANPP homologado/admitido"
+
+    if any(
+        trecho in text
+        for trecho in (
             "parcialmente procedente",
             "procedente em parte",
             "parcial procedente",
@@ -800,6 +838,20 @@ def classify_decision_outcome(nome: str) -> str:
         )
     ):
         return "Recebimento da denuncia/queixa"
+    if any(
+        trecho in text
+        for trecho in (
+            "nao recebida a denuncia",
+            "não recebida a denuncia",
+            "nao recebimento da denuncia",
+            "não recebimento da denuncia",
+            "rejeicao da denuncia",
+            "rejeição da denuncia",
+            "rejeicao da queixa",
+            "rejeição da queixa",
+        )
+    ):
+        return "Rejeicao da denuncia/queixa"
     if any(trecho in text for trecho in ("despronuncia", "despronunciado")):
         return "Despronuncia"
     if any(trecho in text for trecho in ("impronuncia", "impronunciado")):
@@ -814,6 +866,32 @@ def classify_decision_outcome(nome: str) -> str:
         trecho in text for trecho in ("liminar", "tutela", "seguranca")
     ):
         return "Tutela/Liminar negada"
+    if any(
+        trecho in text
+        for trecho in (
+            "nao homolog",
+            "não homolog",
+            "rejeit",
+            "recus",
+        )
+    ):
+        return "Rejeicao/Negativa"
+    if any(
+        trecho in text
+        for trecho in (
+            "nao acolh",
+            "não acolh",
+            "nao conhecimento",
+            "não conhecimento",
+        )
+    ):
+        return "Nao acolhimento"
+    if any(trecho in text for trecho in ("acolh", "acolhido")):
+        return "Acolhimento"
+    if any(trecho in text for trecho in ("indefer", "denegad")):
+        return "Indeferimento"
+    if any(trecho in text for trecho in ("defer", "admit", "recebimento", "recebido", "recebida", "receb")):
+        return "Recebimento/Admissao"
     if any(trecho in text for trecho in ("nao conhecid", "prejudicad", "deserto")):
         return "Nao conhecido/Prejudicado"
     return ""
@@ -849,7 +927,7 @@ def extract_latest_decision_proxy(movimentos: Any) -> tuple[str, str, Any]:
             ultimo_movimento_data = data_hora
 
     if fallback_nome:
-        return "Outro movimento decisorio", fallback_nome, fallback_data
+        return CATEGORIA_NAO_CLASSIFICADA, fallback_nome, fallback_data
     if ultimo_movimento_nome:
         return "", ultimo_movimento_nome, ultimo_movimento_data
 
@@ -995,7 +1073,7 @@ def decision_signal_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
     if base.empty:
         return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
 
-    base_sem_generico = base[base["decisao_categoria"] != "Outro movimento decisorio"]
+    base_sem_generico = base[base["decisao_categoria"] != CATEGORIA_NAO_CLASSIFICADA]
     if not base_sem_generico.empty:
         return base_sem_generico
     return base
@@ -1563,9 +1641,14 @@ def build_decision_theme_insights(
     )
     if isinstance(desfechos_tema, pd.DataFrame) and not desfechos_tema.empty:
         linha = desfechos_tema.iloc[0]
-        insights.append(
-            f"O desfecho mais frequente para este tema foi `{linha['desfecho']}`, com {format_int_br(linha['quantidade'])} ocorrências."
-        )
+        if str(linha["desfecho"]) == CATEGORIA_NAO_CLASSIFICADA:
+            insights.append(
+                "O app identificou decisões neste tema, mas o texto dos movimentos ainda nao permitiu enquadrar o tipo de desfecho com mais precisão."
+            )
+        else:
+            insights.append(
+                f"O desfecho mais frequente para este tema foi `{linha['desfecho']}`, com {format_int_br(linha['quantidade'])} ocorrências."
+            )
     else:
         insights.append(
             "Ainda nao foi possivel classificar automaticamente um desfecho predominante para este tema; por isso, vale olhar os movimentos finais mais frequentes."
@@ -2362,6 +2445,11 @@ def render() -> None:
                 if not desfechos_tema.empty
                 else "Sem classificacao automatica"
             )
+            desfecho_predominante_card = (
+                "Nao classificado"
+                if desfecho_predominante == CATEGORIA_NAO_CLASSIFICADA
+                else desfecho_predominante
+            )
             dias_decisao = pd.to_numeric(
                 df_tema_decisao["dias_ate_decisao_proxy"], errors="coerce"
             ).dropna()
@@ -2370,7 +2458,7 @@ def render() -> None:
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
             d2.metric("Desfecho classificado", f"{cobertura:.1f}%")
-            d3.metric("Desfecho predominante", desfecho_predominante)
+            d3.metric("Desfecho predominante", desfecho_predominante_card)
             d4.metric("Movimento final identificado", f"{cobertura_movimento:.1f}%")
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
@@ -2397,7 +2485,7 @@ def render() -> None:
                     st.markdown(f"- Mediana ate o desfecho identificado: {mediana_dias}")
                 with col_r2:
                     st.markdown("**Sinal principal do tema**")
-                    st.markdown(f"- Desfecho predominante: {desfecho_predominante}")
+                    st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
                     if not movimentos_tema.empty:
                         st.markdown(
                             f"- Movimento final mais frequente: {movimentos_tema.iloc[0]['movimento']}"
@@ -2410,6 +2498,11 @@ def render() -> None:
                     st.markdown("**Desfechos classificados no tema**")
                     st.caption("Mostra como os desfechos classificados se distribuem neste tema.")
                     if not desfechos_tema.empty:
+                        if bool((desfechos_tema["desfecho"] == CATEGORIA_NAO_CLASSIFICADA).any()):
+                            st.caption(
+                                "Quando aparecer 'Decisao identificada, mas nao classificada', houve sinal decisorio, "
+                                "mas o texto do movimento nao permitiu definir um tipo mais especifico."
+                            )
                         st.pyplot(fig_desfechos_tema(desfechos_tema), clear_figure=True)
                         st.dataframe(desfechos_tema, use_container_width=True, height=300)
                     else:
