@@ -984,6 +984,45 @@ def decision_by_orgao_dataframe(df_anpp: pd.DataFrame, max_orgaos: int = 10) -> 
     return pd.DataFrame(linhas)
 
 
+def decision_signal_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns or "decisao_categoria" not in df_anpp.columns:
+        return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
+
+    base = df_anpp[["orgao_julgador", "decisao_categoria"]].copy()
+    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
+    base["decisao_categoria"] = base["decisao_categoria"].fillna("").astype(str).str.strip()
+    base = base[(base["orgao_julgador"] != "") & (base["decisao_categoria"] != "")]
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
+
+    base_sem_generico = base[base["decisao_categoria"] != "Outro movimento decisorio"]
+    if not base_sem_generico.empty:
+        return base_sem_generico
+    return base
+
+
+def decision_outcome_mix_by_orgao_dataframe(
+    df_anpp: pd.DataFrame,
+    max_orgaos: int = 8,
+    max_desfechos: int = 5,
+) -> pd.DataFrame:
+    base = decision_signal_base_dataframe(df_anpp)
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "total_classificados"])
+
+    top_orgaos = base["orgao_julgador"].value_counts().head(max_orgaos).index.tolist()
+    top_desfechos = base["decisao_categoria"].value_counts().head(max_desfechos).index.tolist()
+    base = base[base["orgao_julgador"].isin(top_orgaos) & base["decisao_categoria"].isin(top_desfechos)]
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "total_classificados"])
+
+    pivot = pd.crosstab(base["orgao_julgador"], base["decisao_categoria"])
+    pivot = pivot.reindex(index=top_orgaos, columns=top_desfechos, fill_value=0)
+    pivot["total_classificados"] = pivot.sum(axis=1)
+    pivot = pivot.reset_index()
+    return pivot
+
+
 def decision_coverage_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
     if df_anpp.empty:
         return {
@@ -1866,6 +1905,65 @@ def fig_desfechos_tema(desfechos_tema: pd.DataFrame) -> Any:
     return fig
 
 
+def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
+    plt = get_plt()
+    if df_mix.empty or "orgao_julgador" not in df_mix.columns:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title("Desfecho por orgao julgador")
+        ax.text(0.5, 0.5, "Sem dados suficientes para cruzar orgao e desfecho.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = df_mix.copy()
+    colunas_desfecho = [
+        coluna for coluna in base.columns if coluna not in {"orgao_julgador", "total_classificados"}
+    ]
+    if not colunas_desfecho:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title("Desfecho por orgao julgador")
+        ax.text(0.5, 0.5, "Sem desfechos classificados para montar o comparativo.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = base[base["total_classificados"] > 0].copy()
+    if base.empty:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title("Desfecho por orgao julgador")
+        ax.text(0.5, 0.5, "Sem volume classificado suficiente para o comparativo.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    percentuais = base[colunas_desfecho].div(base["total_classificados"], axis=0) * 100
+    labels = [
+        orgao if len(orgao) <= 30 else orgao[:30] + "..."
+        for orgao in base["orgao_julgador"].astype(str)
+    ]
+    palette = ["#4E79A7", "#E15759", "#59A14F", "#F28E2B", "#76B7B2", "#EDC948"]
+    fig, ax = plt.subplots(figsize=(10.5, max(4.2, len(base) * 0.65 + 1.6)))
+    left = pd.Series([0.0] * len(base))
+
+    for idx, coluna in enumerate(colunas_desfecho):
+        valores = percentuais[coluna].fillna(0.0)
+        ax.barh(
+            labels,
+            valores,
+            left=left,
+            label=coluna if len(coluna) <= 28 else coluna[:28] + "...",
+            color=palette[idx % len(palette)],
+            alpha=0.95,
+        )
+        left = left + valores
+
+    ax.invert_yaxis()
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("% dos desfechos classificados")
+    ax.set_title("Desfecho por orgao julgador")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.35), ncol=2, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
 def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
     plt = get_plt()
     df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
@@ -2250,6 +2348,7 @@ def render() -> None:
             desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
             movimentos_tema = decision_movements_dataframe(df_tema_decisao)
             orgaos_tema = decision_by_orgao_dataframe(df_tema_decisao)
+            mix_orgaos_tema = decision_outcome_mix_by_orgao_dataframe(df_tema_decisao)
             classes_tema = top_classes_dataframe(df_tema_decisao)
             temas_relacionados = related_themes_dataframe(df_tema_decisao, tema_escolhido)
             cobertura_tema = decision_coverage_summary(df_tema_decisao)
@@ -2328,6 +2427,19 @@ def render() -> None:
             with tema_tabs[2]:
                 st.markdown("**Como os orgaos julgadores aparecem neste tema**")
                 st.caption("Compara volume, cobertura e sinal principal por orgao julgador neste tema.")
+                if not mix_orgaos_tema.empty:
+                    st.markdown("**Desfecho por orgao julgador**")
+                    st.caption("Compara a composicao dos desfechos classificados entre os principais orgaos do tema.")
+                    col_mix_chart, col_mix_table = st.columns(2)
+                    with col_mix_chart:
+                        st.pyplot(fig_desfechos_por_orgao(mix_orgaos_tema), clear_figure=True)
+                    with col_mix_table:
+                        st.dataframe(mix_orgaos_tema, use_container_width=True, height=360)
+                else:
+                    st.info(
+                        "Ainda nao ha desfechos classificados suficientes para comparar os orgaos julgadores neste tema."
+                    )
+                st.markdown("**Resumo por orgao julgador**")
                 if not orgaos_tema.empty:
                     st.dataframe(orgaos_tema, use_container_width=True, height=360)
                 else:
