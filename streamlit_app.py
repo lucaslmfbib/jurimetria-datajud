@@ -1903,7 +1903,7 @@ def render() -> None:
     st.set_page_config(page_title="Jurimetria com a API DataJud", layout="wide")
     st.title("Jurimetria com a API DataJud")
     st.markdown(
-        "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB no 243736  \n"
+        "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
         "GitHub: [@lucaslmfbib](https://github.com/lucaslmfbib) | "
         "LinkedIn: [lucaslmf](https://www.linkedin.com/in/lucaslmf/) | "
         "Instagram: [@lucaslmf_](https://www.instagram.com/lucaslmf_/)"
