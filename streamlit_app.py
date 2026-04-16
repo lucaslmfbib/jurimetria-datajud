@@ -1,4 +1,5 @@
 from datetime import date, datetime, time as dt_time
+import html
 import io
 import importlib
 import os
@@ -2207,6 +2208,29 @@ def format_int_br(value: Any) -> str:
         return str(value)
 
 
+def render_theme_metric_card(
+    column: Any,
+    label: str,
+    value: Any,
+    delta: str | None = None,
+) -> None:
+    label_html = html.escape(str(label or ""))
+    value_html = html.escape(str(value or "-"))
+    delta_html = ""
+    if delta:
+        delta_html = f"<div class='theme-metric-delta'>{html.escape(str(delta))}</div>"
+    column.markdown(
+        f"""
+        <div class="theme-metric-card">
+            <div class="theme-metric-label">{label_html}</div>
+            <div class="theme-metric-value">{value_html}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def build_sample_insights(
     df_anpp: pd.DataFrame,
     df_mensal: pd.DataFrame,
@@ -2942,27 +2966,37 @@ def render() -> None:
     st.markdown(
         """
         <style>
-        div[data-testid="stMetric"] {
-            min-height: 8.2rem;
+        .theme-metric-card {
+            min-height: 8.7rem;
+            padding: 0.25rem 0 0.1rem 0;
         }
-        div[data-testid="stMetricLabel"] p {
-            white-space: normal !important;
+        .theme-metric-label {
+            font-size: 0.98rem;
+            font-weight: 600;
+            line-height: 1.25;
+            color: rgba(250, 250, 250, 0.92);
+            margin-bottom: 0.45rem;
         }
-        div[data-testid="stMetricValue"] {
-            overflow: visible !important;
+        .theme-metric-value {
+            font-size: clamp(1.7rem, 2vw, 3rem);
+            font-weight: 700;
+            line-height: 1.02;
+            color: rgba(250, 250, 250, 0.98);
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
-        div[data-testid="stMetricValue"] > div {
-            font-size: clamp(1.8rem, 2.2vw, 3.1rem) !important;
-            line-height: 1.05 !important;
-            white-space: normal !important;
-            overflow: visible !important;
-            text-overflow: unset !important;
-            word-break: break-word !important;
-        }
-        div[data-testid="stMetricDelta"] > div {
-            white-space: normal !important;
-            font-size: 0.95rem !important;
-            line-height: 1.15 !important;
+        .theme-metric-delta {
+            display: inline-block;
+            margin-top: 0.6rem;
+            padding: 0.18rem 0.55rem;
+            border-radius: 999px;
+            background: rgba(41, 122, 74, 0.35);
+            color: #9EE6AE;
+            font-size: 0.9rem;
+            line-height: 1.1;
+            font-weight: 600;
+            white-space: normal;
         }
         </style>
         """,
@@ -3454,15 +3488,15 @@ def render() -> None:
             )
 
             d1, d2, d3, d4 = st.columns(4)
-            d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
-            d2.metric("Desfecho classificado", f"{cobertura:.1f}%")
-            d3.metric("Desfecho predominante", desfecho_predominante_card)
-            d4.metric("Movimento final identificado", f"{cobertura_movimento:.1f}%")
+            render_theme_metric_card(d1, "Processos do tema", f"{total_tema:,}".replace(",", "."))
+            render_theme_metric_card(d2, "Desfecho classificado", f"{cobertura:.1f}%")
+            render_theme_metric_card(d3, "Desfecho predominante", desfecho_predominante_card)
+            render_theme_metric_card(d4, "Movimento final identificado", f"{cobertura_movimento:.1f}%")
             e1, e2, e3, e4 = st.columns(4)
-            e1.metric("Robustez da amostra", forca_tema)
-            e2.metric("Favorabilidade estimada", leitura_favorabilidade, delta=delta_favorabilidade)
-            e3.metric("Estabilidade decisoria", perfil_estabilidade, delta=delta_estabilidade)
-            e4.metric("Mudanca recente", mudanca_label, delta=delta_mudanca)
+            render_theme_metric_card(e1, "Robustez da amostra", forca_tema)
+            render_theme_metric_card(e2, "Favorabilidade estimada", leitura_favorabilidade, delta_favorabilidade)
+            render_theme_metric_card(e3, "Estabilidade decisoria", perfil_estabilidade, delta_estabilidade)
+            render_theme_metric_card(e4, "Mudanca recente", mudanca_label, delta_mudanca)
             st.caption(
                 "Legenda: desfecho predominante = sinal mais comum; robustez = forca da base; "
                 "favorabilidade = tendencia mais pro ou contra; estabilidade = repeticao do padrao; "
