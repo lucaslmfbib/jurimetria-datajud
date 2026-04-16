@@ -165,6 +165,45 @@ MOVIMENTO_NAO_DECISORIO_HINTS = (
 )
 
 CATEGORIA_NAO_CLASSIFICADA = "Decisao identificada, mas nao classificada"
+POLARIDADE_FAVORAVEL = "Favoravel estimado"
+POLARIDADE_DESFAVORAVEL = "Desfavoravel estimado"
+POLARIDADE_MISTA = "Misto/Parcial"
+POLARIDADE_NEUTRA = "Neutro/Processual"
+POLARIDADE_INDEFINIDA = "Indefinido"
+
+POLARIDADE_DESFECHO_MAP = {
+    "Procedente": POLARIDADE_FAVORAVEL,
+    "Parcialmente procedente": POLARIDADE_MISTA,
+    "Recurso provido": POLARIDADE_FAVORAVEL,
+    "Parcial provimento": POLARIDADE_MISTA,
+    "Recurso improvido": POLARIDADE_DESFAVORAVEL,
+    "Improcedente": POLARIDADE_DESFAVORAVEL,
+    "Homologacao de acordo": POLARIDADE_FAVORAVEL,
+    "Homologacao": POLARIDADE_NEUTRA,
+    "Ordem/Seguranca concedida": POLARIDADE_FAVORAVEL,
+    "Ordem/Seguranca denegada": POLARIDADE_DESFAVORAVEL,
+    "Absolvicao sumaria": POLARIDADE_FAVORAVEL,
+    "Absolvicao": POLARIDADE_FAVORAVEL,
+    "Condenacao": POLARIDADE_DESFAVORAVEL,
+    "Extincao da punibilidade": POLARIDADE_FAVORAVEL,
+    "Extincao/Arquivamento": POLARIDADE_NEUTRA,
+    "Recebimento da denuncia/queixa": POLARIDADE_DESFAVORAVEL,
+    "Rejeicao da denuncia/queixa": POLARIDADE_FAVORAVEL,
+    "Despronuncia": POLARIDADE_FAVORAVEL,
+    "Impronuncia": POLARIDADE_FAVORAVEL,
+    "Pronuncia": POLARIDADE_DESFAVORAVEL,
+    "Tutela/Liminar concedida": POLARIDADE_FAVORAVEL,
+    "Tutela/Liminar negada": POLARIDADE_DESFAVORAVEL,
+    "Rejeicao/Negativa": POLARIDADE_DESFAVORAVEL,
+    "Nao acolhimento": POLARIDADE_DESFAVORAVEL,
+    "Acolhimento": POLARIDADE_FAVORAVEL,
+    "Indeferimento": POLARIDADE_DESFAVORAVEL,
+    "Recebimento/Admissao": POLARIDADE_NEUTRA,
+    "Nao conhecido/Prejudicado": POLARIDADE_NEUTRA,
+    "ANPP homologado/admitido": POLARIDADE_FAVORAVEL,
+    "ANPP nao homologado/rejeitado": POLARIDADE_DESFAVORAVEL,
+    CATEGORIA_NAO_CLASSIFICADA: POLARIDADE_INDEFINIDA,
+}
 
 
 @st.cache_resource(show_spinner=False)
@@ -1082,6 +1121,451 @@ def decision_signal_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
     return base
 
 
+def outcome_polarity_label(categoria: Any) -> str:
+    categoria_limpa = str(categoria or "").strip()
+    if not categoria_limpa:
+        return POLARIDADE_INDEFINIDA
+    return POLARIDADE_DESFECHO_MAP.get(categoria_limpa, POLARIDADE_INDEFINIDA)
+
+
+def decision_category_series(df_anpp: pd.DataFrame) -> pd.Series:
+    if df_anpp.empty or "decisao_categoria" not in df_anpp.columns:
+        return pd.Series(dtype="object")
+    categorias = df_anpp["decisao_categoria"].fillna("").astype(str).str.strip()
+    categorias = categorias[categorias != ""]
+    if categorias.empty:
+        return pd.Series(dtype="object")
+    categorias_sem_generico = categorias[categorias != CATEGORIA_NAO_CLASSIFICADA]
+    if not categorias_sem_generico.empty:
+        return categorias_sem_generico
+    return categorias
+
+
+def favorability_index_from_counts(
+    favoravel: int,
+    desfavoravel: int,
+    misto: int,
+) -> float | None:
+    total_util = favoravel + desfavoravel + misto
+    if total_util <= 0:
+        return None
+    indice = ((favoravel + (0.5 * misto)) - desfavoravel) / total_util * 100
+    return float(indice)
+
+
+def favorability_label_from_index(indice: float | None) -> str:
+    if indice is None:
+        return "Sem base"
+    if indice >= 40:
+        return "Muito favoravel"
+    if indice >= 15:
+        return "Favoravel"
+    if indice > -15:
+        return "Equilibrado"
+    if indice > -40:
+        return "Restritivo"
+    return "Muito restritivo"
+
+
+def stability_index_from_counts(contagem: pd.Series) -> float | None:
+    total = float(pd.to_numeric(contagem, errors="coerce").fillna(0).sum())
+    if total <= 0:
+        return None
+    shares = pd.to_numeric(contagem, errors="coerce").fillna(0) / total
+    return float((shares.pow(2).sum()) * 100)
+
+
+def stability_label_from_index(indice: float | None) -> str:
+    if indice is None:
+        return "Sem base"
+    if indice >= 80:
+        return "Muito alta"
+    if indice >= 60:
+        return "Alta"
+    if indice >= 45:
+        return "Media"
+    return "Baixa"
+
+
+def decision_polarity_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
+    base = decision_signal_base_dataframe(df_anpp)
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria", "polaridade"])
+    base = base.copy()
+    base["polaridade"] = base["decisao_categoria"].apply(outcome_polarity_label)
+    return base
+
+
+def decision_favorability_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    categorias = decision_category_series(df_anpp)
+    if categorias.empty:
+        return {
+            "total_classificados": 0,
+            "decisoes_uteis": 0,
+            "favoravel_qtd": 0,
+            "desfavoravel_qtd": 0,
+            "misto_qtd": 0,
+            "neutro_qtd": 0,
+            "favoravel_pct": 0.0,
+            "desfavoravel_pct": 0.0,
+            "misto_pct": 0.0,
+            "neutro_pct": 0.0,
+            "indice_favorabilidade": None,
+            "leitura_favorabilidade": "Sem base",
+        }
+
+    polaridades = categorias.apply(outcome_polarity_label).value_counts()
+    total_classificados = int(len(categorias))
+    favoravel_qtd = int(polaridades.get(POLARIDADE_FAVORAVEL, 0))
+    desfavoravel_qtd = int(polaridades.get(POLARIDADE_DESFAVORAVEL, 0))
+    misto_qtd = int(polaridades.get(POLARIDADE_MISTA, 0))
+    neutro_qtd = int(
+        polaridades.get(POLARIDADE_NEUTRA, 0) + polaridades.get(POLARIDADE_INDEFINIDA, 0)
+    )
+    decisoes_uteis = favoravel_qtd + desfavoravel_qtd + misto_qtd
+    indice = favorability_index_from_counts(favoravel_qtd, desfavoravel_qtd, misto_qtd)
+
+    return {
+        "total_classificados": total_classificados,
+        "decisoes_uteis": decisoes_uteis,
+        "favoravel_qtd": favoravel_qtd,
+        "desfavoravel_qtd": desfavoravel_qtd,
+        "misto_qtd": misto_qtd,
+        "neutro_qtd": neutro_qtd,
+        "favoravel_pct": (favoravel_qtd / decisoes_uteis * 100) if decisoes_uteis else 0.0,
+        "desfavoravel_pct": (desfavoravel_qtd / decisoes_uteis * 100) if decisoes_uteis else 0.0,
+        "misto_pct": (misto_qtd / decisoes_uteis * 100) if decisoes_uteis else 0.0,
+        "neutro_pct": (neutro_qtd / total_classificados * 100) if total_classificados else 0.0,
+        "indice_favorabilidade": indice,
+        "leitura_favorabilidade": favorability_label_from_index(indice),
+    }
+
+
+def decision_stability_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    categorias = decision_category_series(df_anpp)
+    if categorias.empty:
+        return {
+            "total_classificados": 0,
+            "desfecho_lider": "",
+            "forca_lider": 0.0,
+            "indice_estabilidade": None,
+            "perfil_estabilidade": "Sem base",
+        }
+
+    contagem = categorias.value_counts()
+    indice = stability_index_from_counts(contagem)
+    lider = str(contagem.index[0]) if not contagem.empty else ""
+    forca_lider = (float(contagem.iloc[0]) / float(contagem.sum()) * 100) if not contagem.empty else 0.0
+    return {
+        "total_classificados": int(contagem.sum()),
+        "desfecho_lider": lider,
+        "forca_lider": forca_lider,
+        "indice_estabilidade": indice,
+        "perfil_estabilidade": stability_label_from_index(indice),
+    }
+
+
+def decision_favorability_by_orgao_dataframe(
+    df_anpp: pd.DataFrame,
+    min_decisoes_uteis: int = 5,
+    max_items: int | None = 12,
+) -> pd.DataFrame:
+    base = decision_polarity_base_dataframe(df_anpp)
+    if base.empty:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "decisoes_classificadas",
+                "decisoes_uteis",
+                "favoravel_pct",
+                "desfavoravel_pct",
+                "misto_pct",
+                "indice_favorabilidade",
+                "leitura_favorabilidade",
+            ]
+        )
+
+    linhas: list[dict[str, Any]] = []
+    for orgao, grupo in base.groupby("orgao_julgador"):
+        polaridades = grupo["polaridade"].value_counts()
+        favoravel = int(polaridades.get(POLARIDADE_FAVORAVEL, 0))
+        desfavoravel = int(polaridades.get(POLARIDADE_DESFAVORAVEL, 0))
+        misto = int(polaridades.get(POLARIDADE_MISTA, 0))
+        decisoes_uteis = favoravel + desfavoravel + misto
+        if decisoes_uteis < min_decisoes_uteis:
+            continue
+        indice = favorability_index_from_counts(favoravel, desfavoravel, misto)
+        linhas.append(
+            {
+                "orgao_julgador": orgao,
+                "decisoes_classificadas": int(len(grupo)),
+                "decisoes_uteis": decisoes_uteis,
+                "favoravel_pct": round((favoravel / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
+                "desfavoravel_pct": round((desfavoravel / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
+                "misto_pct": round((misto / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
+                "indice_favorabilidade": round(float(indice), 1) if indice is not None else pd.NA,
+                "leitura_favorabilidade": favorability_label_from_index(indice),
+            }
+        )
+
+    if not linhas:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "decisoes_classificadas",
+                "decisoes_uteis",
+                "favoravel_pct",
+                "desfavoravel_pct",
+                "misto_pct",
+                "indice_favorabilidade",
+                "leitura_favorabilidade",
+            ]
+        )
+
+    resultado = pd.DataFrame(linhas).sort_values(
+        ["indice_favorabilidade", "decisoes_uteis"], ascending=[False, False]
+    )
+    if max_items is not None:
+        resultado = resultado.head(max_items)
+    return resultado.reset_index(drop=True)
+
+
+def decision_time_by_orgao_dataframe(
+    df_anpp: pd.DataFrame,
+    min_processos: int = 3,
+    max_items: int | None = 12,
+) -> pd.DataFrame:
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns or "dias_ate_decisao_proxy" not in df_anpp.columns:
+        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+
+    base = df_anpp[["orgao_julgador", "dias_ate_decisao_proxy"]].copy()
+    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
+    base["dias_ate_decisao_proxy"] = pd.to_numeric(base["dias_ate_decisao_proxy"], errors="coerce")
+    base = base[(base["orgao_julgador"] != "") & (base["dias_ate_decisao_proxy"].notna())]
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+
+    linhas: list[dict[str, Any]] = []
+    for orgao, grupo in base.groupby("orgao_julgador"):
+        if len(grupo) < min_processos:
+            continue
+        linhas.append(
+            {
+                "orgao_julgador": orgao,
+                "processos_com_tempo": int(len(grupo)),
+                "mediana_dias": round(float(grupo["dias_ate_decisao_proxy"].median()), 1),
+                "p75_dias": round(float(grupo["dias_ate_decisao_proxy"].quantile(0.75)), 1),
+            }
+        )
+
+    if not linhas:
+        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+
+    resultado = pd.DataFrame(linhas).sort_values(
+        ["mediana_dias", "processos_com_tempo"], ascending=[True, False]
+    )
+    if max_items is not None:
+        resultado = resultado.head(max_items)
+    return resultado.reset_index(drop=True)
+
+
+def decision_stability_by_orgao_dataframe(
+    df_anpp: pd.DataFrame,
+    min_classificados: int = 5,
+    max_items: int | None = 12,
+) -> pd.DataFrame:
+    base = decision_signal_base_dataframe(df_anpp)
+    if base.empty:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "decisoes_classificadas",
+                "desfecho_lider",
+                "forca_lider",
+                "indice_estabilidade",
+                "perfil_estabilidade",
+            ]
+        )
+
+    linhas: list[dict[str, Any]] = []
+    for orgao, grupo in base.groupby("orgao_julgador"):
+        if len(grupo) < min_classificados:
+            continue
+        contagem = grupo["decisao_categoria"].value_counts()
+        indice = stability_index_from_counts(contagem)
+        linhas.append(
+            {
+                "orgao_julgador": orgao,
+                "decisoes_classificadas": int(len(grupo)),
+                "desfecho_lider": str(contagem.index[0]),
+                "forca_lider": round(float(contagem.iloc[0] / contagem.sum() * 100), 1),
+                "indice_estabilidade": round(float(indice), 1) if indice is not None else pd.NA,
+                "perfil_estabilidade": stability_label_from_index(indice),
+            }
+        )
+
+    if not linhas:
+        return pd.DataFrame(
+            columns=[
+                "orgao_julgador",
+                "decisoes_classificadas",
+                "desfecho_lider",
+                "forca_lider",
+                "indice_estabilidade",
+                "perfil_estabilidade",
+            ]
+        )
+
+    resultado = pd.DataFrame(linhas).sort_values(
+        ["indice_estabilidade", "decisoes_classificadas"], ascending=[False, False]
+    )
+    if max_items is not None:
+        resultado = resultado.head(max_items)
+    return resultado.reset_index(drop=True)
+
+
+def decision_pattern_change_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    if (
+        df_anpp.empty
+        or "decisao_categoria" not in df_anpp.columns
+        or "decisao_data" not in df_anpp.columns
+    ):
+        return {
+            "janela_meses": 0,
+            "meses_recentes": [],
+            "meses_anteriores": [],
+            "qtd_recente": 0,
+            "qtd_anterior": 0,
+            "desfecho_lider_recente": "",
+            "desfecho_lider_anterior": "",
+            "indice_recente": None,
+            "indice_anterior": None,
+            "delta_indice": None,
+            "mudanca_principal": "Sem base",
+        }
+
+    base = df_anpp[["decisao_categoria", "decisao_data"]].copy()
+    base["decisao_categoria"] = base["decisao_categoria"].fillna("").astype(str).str.strip()
+    base["decisao_data"] = pd.to_datetime(base["decisao_data"], errors="coerce")
+    base = base[(base["decisao_categoria"] != "") & (base["decisao_data"].notna())]
+    if base.empty:
+        return {
+            "janela_meses": 0,
+            "meses_recentes": [],
+            "meses_anteriores": [],
+            "qtd_recente": 0,
+            "qtd_anterior": 0,
+            "desfecho_lider_recente": "",
+            "desfecho_lider_anterior": "",
+            "indice_recente": None,
+            "indice_anterior": None,
+            "delta_indice": None,
+            "mudanca_principal": "Sem base",
+        }
+
+    base["mes_decisao"] = base["decisao_data"].dt.to_period("M")
+    meses = sorted(base["mes_decisao"].dropna().unique())
+    janela = 0
+    if len(meses) >= 6:
+        janela = 3
+    elif len(meses) >= 4:
+        janela = 2
+    elif len(meses) >= 2:
+        janela = 1
+    if janela == 0:
+        return {
+            "janela_meses": 0,
+            "meses_recentes": [],
+            "meses_anteriores": [],
+            "qtd_recente": 0,
+            "qtd_anterior": 0,
+            "desfecho_lider_recente": "",
+            "desfecho_lider_anterior": "",
+            "indice_recente": None,
+            "indice_anterior": None,
+            "delta_indice": None,
+            "mudanca_principal": "Sem base",
+        }
+
+    meses_recentes = meses[-janela:]
+    meses_anteriores = meses[-(janela * 2):-janela]
+    base_recente = base[base["mes_decisao"].isin(meses_recentes)].copy()
+    base_anterior = base[base["mes_decisao"].isin(meses_anteriores)].copy()
+
+    contagem_recente = base_recente["decisao_categoria"].value_counts()
+    contagem_anterior = base_anterior["decisao_categoria"].value_counts()
+    lider_recente = str(contagem_recente.index[0]) if not contagem_recente.empty else ""
+    lider_anterior = str(contagem_anterior.index[0]) if not contagem_anterior.empty else ""
+
+    favor_recente = decision_favorability_summary(base_recente)
+    favor_anterior = decision_favorability_summary(base_anterior)
+    indice_recente = favor_recente["indice_favorabilidade"]
+    indice_anterior = favor_anterior["indice_favorabilidade"]
+    delta_indice = (
+        float(indice_recente) - float(indice_anterior)
+        if indice_recente is not None and indice_anterior is not None
+        else None
+    )
+
+    mudanca_principal = "Padrao semelhante"
+    if lider_recente and lider_anterior and lider_recente != lider_anterior:
+        mudanca_principal = "Mudanca do desfecho lider"
+    elif delta_indice is not None and delta_indice >= 12:
+        mudanca_principal = "Sinal mais favoravel"
+    elif delta_indice is not None and delta_indice <= -12:
+        mudanca_principal = "Sinal mais restritivo"
+
+    return {
+        "janela_meses": janela,
+        "meses_recentes": [mes.strftime("%m/%Y") for mes in meses_recentes],
+        "meses_anteriores": [mes.strftime("%m/%Y") for mes in meses_anteriores],
+        "qtd_recente": int(len(base_recente)),
+        "qtd_anterior": int(len(base_anterior)),
+        "desfecho_lider_recente": lider_recente,
+        "desfecho_lider_anterior": lider_anterior,
+        "indice_recente": indice_recente,
+        "indice_anterior": indice_anterior,
+        "delta_indice": delta_indice,
+        "mudanca_principal": mudanca_principal,
+    }
+
+
+def theme_sample_alerts(
+    total_tema: int,
+    total_com_desfecho: int,
+    favorabilidade_tema: dict[str, Any],
+    favorabilidade_orgaos: pd.DataFrame,
+    tempo_orgaos: pd.DataFrame,
+    mudanca_padrao: dict[str, Any],
+) -> list[str]:
+    alertas: list[str] = []
+    if total_tema < 30:
+        alertas.append(
+            "A amostra total do tema ainda e pequena. Use os rankings como indicio inicial, nao como padrao fechado."
+        )
+    if total_com_desfecho < 10:
+        alertas.append(
+            "Poucos processos do tema tiveram desfecho classificado automaticamente. Isso reduz a seguranca da leitura comparativa."
+        )
+    if int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) < 10:
+        alertas.append(
+            "A favorabilidade estimada ainda tem pouca base util. Desfechos neutros ou processuais estao pesando mais do que o ideal."
+        )
+    if not isinstance(favorabilidade_orgaos, pd.DataFrame) or len(favorabilidade_orgaos) < 3:
+        alertas.append(
+            "Ainda nao ha orgaos suficientes com base util para um ranking robusto de favorabilidade."
+        )
+    if not isinstance(tempo_orgaos, pd.DataFrame) or tempo_orgaos.empty:
+        alertas.append(
+            "Ainda nao ha massa critica para comparar tempo mediano de decisao por orgao neste tema."
+        )
+    if int(mudanca_padrao.get("janela_meses", 0) or 0) == 0:
+        alertas.append(
+            "A serie decisoria recente do tema ainda nao tem meses suficientes para medir mudanca de padrao."
+        )
+    return alertas
+
+
 def decision_outcome_mix_by_orgao_dataframe(
     df_anpp: pd.DataFrame,
     max_orgaos: int = 8,
@@ -1867,6 +2351,10 @@ def build_decision_theme_insights(
     forca_tema: str,
     concentracao_tema: dict[str, Any],
     tendencia_tema: dict[str, Any],
+    favorabilidade_tema: dict[str, Any],
+    estabilidade_tema: dict[str, Any],
+    mudanca_padrao: dict[str, Any],
+    alertas_tema: list[str],
 ) -> list[str]:
     if total_tema <= 0:
         return ["Sem dados suficientes para gerar insights automáticos deste tema."]
@@ -1903,6 +2391,14 @@ def build_decision_theme_insights(
     insights.append(
         f"A robustez estatística desta leitura temática foi classificada como `{forca_tema}`, considerando o volume da amostra e a cobertura de desfechos identificados."
     )
+    if favorabilidade_tema.get("indice_favorabilidade") is not None:
+        insights.append(
+            f"O índice de favorabilidade estimada do tema ficou em `{float(favorabilidade_tema['indice_favorabilidade']):.1f}`, com leitura `{favorabilidade_tema['leitura_favorabilidade']}`."
+        )
+    if estabilidade_tema.get("indice_estabilidade") is not None:
+        insights.append(
+            f"O padrão decisório do tema apareceu com estabilidade `{estabilidade_tema['perfil_estabilidade']}`, puxado pelo desfecho líder `{estabilidade_tema['desfecho_lider']}`."
+        )
     if concentracao_tema.get("top_orgao"):
         insights.append(
             f"O órgão líder do tema foi `{concentracao_tema['top_orgao']}`, com {concentracao_tema['top_orgao_share']:.1f}% dos processos com órgão identificado; "
@@ -1921,6 +2417,12 @@ def build_decision_theme_insights(
             insights.append(
                 f"Na série recente do tema, o último mês disponível foi `{ultimo_mes}`, com {ultimo_valor} processos, em um cenário de `{tendencia.lower()}`."
             )
+    if int(mudanca_padrao.get("janela_meses", 0) or 0) > 0:
+        insights.append(
+            f"Na comparação recente do padrão decisório, a leitura foi `{mudanca_padrao['mudanca_principal']}`."
+        )
+    if alertas_tema:
+        insights.append(f"Alertas metodológicos ativos nesta leitura: {len(alertas_tema)}.")
     return insights
 
 
@@ -2301,6 +2803,70 @@ def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
     ax.set_title("Desfecho por orgao julgador")
     ax.grid(axis="x", linestyle="--", alpha=0.25)
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.35), ncol=2, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+def fig_favorabilidade_por_orgao(df_favorabilidade: pd.DataFrame) -> Any:
+    plt = get_plt()
+    if df_favorabilidade.empty or "orgao_julgador" not in df_favorabilidade.columns:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title("Indice de favorabilidade por orgao")
+        ax.text(0.5, 0.5, "Sem base suficiente para medir favorabilidade por orgao.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = df_favorabilidade.copy().sort_values("indice_favorabilidade", ascending=True)
+    labels = [
+        orgao if len(orgao) <= 28 else orgao[:28] + "..."
+        for orgao in base["orgao_julgador"].astype(str)
+    ]
+    valores = pd.to_numeric(base["indice_favorabilidade"], errors="coerce").fillna(0.0)
+    cores = ["#59A14F" if valor >= 0 else "#E15759" for valor in valores]
+
+    fig, ax = plt.subplots(figsize=(10, max(4.2, len(base) * 0.55 + 1.5)))
+    ax.barh(labels, valores, color=cores, alpha=0.92)
+    ax.axvline(0, color="#BBBBBB", linewidth=1)
+    ax.set_xlabel("Indice de favorabilidade estimada")
+    ax.set_ylabel("Orgao julgador")
+    ax.set_title("Indice de favorabilidade por orgao")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+
+    for i, valor in enumerate(valores):
+        deslocamento = 1.2 if valor >= 0 else -1.2
+        alinhamento = "left" if valor >= 0 else "right"
+        ax.text(valor + deslocamento, i, f"{valor:.1f}", va="center", ha=alinhamento, fontsize=9)
+
+    fig.tight_layout()
+    return fig
+
+
+def fig_tempo_por_orgao(df_tempo: pd.DataFrame) -> Any:
+    plt = get_plt()
+    if df_tempo.empty or "orgao_julgador" not in df_tempo.columns:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title("Tempo mediano por orgao")
+        ax.text(0.5, 0.5, "Sem base suficiente para comparar tempo por orgao.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = df_tempo.copy().sort_values("mediana_dias", ascending=False)
+    labels = [
+        orgao if len(orgao) <= 30 else orgao[:30] + "..."
+        for orgao in base["orgao_julgador"].astype(str)
+    ]
+    valores = pd.to_numeric(base["mediana_dias"], errors="coerce").fillna(0.0)
+
+    fig, ax = plt.subplots(figsize=(10, max(4.2, len(base) * 0.55 + 1.5)))
+    ax.barh(labels, valores, color="#4E79A7", alpha=0.92)
+    ax.set_xlabel("Mediana de dias ate o desfecho")
+    ax.set_ylabel("Orgao julgador")
+    ax.set_title("Tempo mediano por orgao")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+
+    for i, valor in enumerate(valores):
+        ax.text(valor + max(float(valores.max()) * 0.01, 0.6), i, f"{valor:.1f}", va="center", fontsize=9)
+
     fig.tight_layout()
     return fig
 
@@ -2760,9 +3326,35 @@ def render() -> None:
             )
             concentracao_tema = theme_concentration_summary(df_tema_decisao)
             tendencia_tema = theme_recent_trend_summary(df_tema_decisao)
+            favorabilidade_tema = decision_favorability_summary(df_tema_decisao)
+            estabilidade_tema = decision_stability_summary(df_tema_decisao)
+            favorabilidade_orgaos = decision_favorability_by_orgao_dataframe(
+                df_tema_decisao,
+                min_decisoes_uteis=5,
+                max_items=None,
+            )
+            tempo_orgaos = decision_time_by_orgao_dataframe(
+                df_tema_decisao,
+                min_processos=3,
+                max_items=None,
+            )
+            estabilidade_orgaos = decision_stability_by_orgao_dataframe(
+                df_tema_decisao,
+                min_classificados=5,
+                max_items=None,
+            )
+            mudanca_padrao = decision_pattern_change_summary(df_tema_decisao)
             total_tema = int(cobertura_tema["total_processos"])
             total_com_desfecho = int(cobertura_tema["com_desfecho"])
             total_com_movimento = int(cobertura_tema["com_movimento_final"])
+            alertas_tema = theme_sample_alerts(
+                total_tema,
+                total_com_desfecho,
+                favorabilidade_tema,
+                favorabilidade_orgaos,
+                tempo_orgaos,
+                mudanca_padrao,
+            )
             cobertura = float(cobertura_tema["cobertura_desfecho"])
             cobertura_movimento = float(cobertura_tema["cobertura_movimento"])
             desfecho_predominante = (
@@ -2793,6 +3385,44 @@ def render() -> None:
                 else None
             )
             serie_tema = tendencia_tema.get("serie", pd.Series(dtype="int64"))
+            indice_favorabilidade = favorabilidade_tema.get("indice_favorabilidade")
+            leitura_favorabilidade = str(favorabilidade_tema.get("leitura_favorabilidade", "Sem base"))
+            delta_favorabilidade = (
+                f"{float(indice_favorabilidade):+.1f}"
+                if indice_favorabilidade is not None
+                else None
+            )
+            indice_estabilidade = estabilidade_tema.get("indice_estabilidade")
+            perfil_estabilidade = str(estabilidade_tema.get("perfil_estabilidade", "Sem base"))
+            delta_estabilidade = (
+                f"{float(indice_estabilidade):.1f}"
+                if indice_estabilidade is not None
+                else None
+            )
+            mudanca_label = str(mudanca_padrao.get("mudanca_principal", "Sem base"))
+            delta_mudanca = (
+                f"{float(mudanca_padrao['delta_indice']):+.1f}"
+                if mudanca_padrao.get("delta_indice") is not None
+                else None
+            )
+            ranking_favoraveis = (
+                favorabilidade_orgaos.sort_values(
+                    ["indice_favorabilidade", "decisoes_uteis"], ascending=[False, False]
+                )
+                .head(5)
+                .reset_index(drop=True)
+                if not favorabilidade_orgaos.empty
+                else pd.DataFrame()
+            )
+            ranking_restritivos = (
+                favorabilidade_orgaos.sort_values(
+                    ["indice_favorabilidade", "decisoes_uteis"], ascending=[True, False]
+                )
+                .head(5)
+                .reset_index(drop=True)
+                if not favorabilidade_orgaos.empty
+                else pd.DataFrame()
+            )
 
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
@@ -2801,9 +3431,9 @@ def render() -> None:
             d4.metric("Movimento final identificado", f"{cobertura_movimento:.1f}%")
             e1, e2, e3, e4 = st.columns(4)
             e1.metric("Robustez da amostra", forca_tema)
-            e2.metric("Concentracao lider", f"{top_orgao_share:.1f}%")
-            e3.metric("Top 3 orgaos", f"{top3_share:.1f}%")
-            e4.metric("Tendencia recente", tendencia_label, delta=tendencia_delta)
+            e2.metric("Favorabilidade estimada", leitura_favorabilidade, delta=delta_favorabilidade)
+            e3.metric("Estabilidade decisoria", perfil_estabilidade, delta=delta_estabilidade)
+            e4.metric("Mudanca recente", mudanca_label, delta=delta_mudanca)
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
                 total_tema,
@@ -2814,8 +3444,12 @@ def render() -> None:
                 forca_tema,
                 concentracao_tema,
                 tendencia_tema,
+                favorabilidade_tema,
+                estabilidade_tema,
+                mudanca_padrao,
+                alertas_tema,
             )
-            tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Orgaos", "Contexto do tema"])
+            tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Orgaos", "Estrategia", "Contexto do tema"])
             with tema_tabs[0]:
                 st.caption(
                     "Aqui o app resume o tema escolhido com base nos processos da amostra e nos movimentos mais recentes encontrados."
@@ -2848,8 +3482,10 @@ def render() -> None:
                     else:
                         st.markdown("- Movimento final mais frequente: sem leitura")
                 with col_r3:
-                    st.markdown("**Robustez e concentracao**")
+                    st.markdown("**Sinais estrategicos**")
                     st.markdown(f"- Robustez estatistica da leitura: {forca_tema}")
+                    st.markdown(f"- Favorabilidade estimada: {leitura_favorabilidade}")
+                    st.markdown(f"- Estabilidade decisoria: {perfil_estabilidade}")
                     if top_orgao_tema:
                         st.markdown(
                             f"- Orgao lider do tema: {top_orgao_tema_curto} ({top_orgao_share:.1f}% dos processos com orgao identificado)"
@@ -2885,6 +3521,8 @@ def render() -> None:
                     st.markdown(
                         f"- Janela observada: {format_int_br(tendencia_tema.get('meses_base', 0))} meses"
                     )
+                    if int(mudanca_padrao.get("janela_meses", 0) or 0) > 0:
+                        st.markdown(f"- Mudanca recente do padrao: {mudanca_label}")
             with tema_tabs[1]:
                 col_desfechos, col_movimentos = st.columns(2)
                 with col_desfechos:
@@ -2927,10 +3565,113 @@ def render() -> None:
                     )
                 st.markdown("**Resumo por orgao julgador**")
                 if not orgaos_tema.empty:
-                    st.dataframe(orgaos_tema, use_container_width=True, height=360)
+                    st.dataframe(orgaos_tema, use_container_width=True, height=320)
                 else:
                     st.info("Nao encontrei dados suficientes por orgao julgador para este tema.")
+                st.markdown("**Taxa de desfecho por orgao**")
+                st.caption(
+                    "Mostra, por orgao, a proporcao estimada de sinais favoraveis, desfavoraveis e mistos entre as decisoes uteis do tema."
+                )
+                if not favorabilidade_orgaos.empty:
+                    st.dataframe(
+                        favorabilidade_orgaos.head(12),
+                        use_container_width=True,
+                        height=320,
+                    )
+                else:
+                    st.info(
+                        "Ainda nao ha base util suficiente para medir favorabilidade estimada por orgao neste tema."
+                    )
             with tema_tabs[3]:
+                st.caption(
+                    "Estas metricas ajudam na estrategia, mas funcionam como proxy automatica. Use junto da leitura juridica do tema e do orgao."
+                )
+                col_estrat1, col_estrat2 = st.columns([1.15, 0.85])
+                with col_estrat1:
+                    st.markdown("**Indice de favorabilidade por orgao**")
+                    st.caption("Compara quais orgaos parecem mais receptivos ou mais restritivos para o tema, com base nas decisoes classificadas.")
+                    st.pyplot(
+                        fig_favorabilidade_por_orgao(favorabilidade_orgaos.head(10)),
+                        clear_figure=True,
+                    )
+                with col_estrat2:
+                    st.markdown("**Favorabilidade do tema**")
+                    if int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) > 0:
+                        st.markdown(
+                            f"- Favoravel estimado: {favorabilidade_tema['favoravel_pct']:.1f}%"
+                        )
+                        st.markdown(
+                            f"- Desfavoravel estimado: {favorabilidade_tema['desfavoravel_pct']:.1f}%"
+                        )
+                        st.markdown(
+                            f"- Misto/parcial: {favorabilidade_tema['misto_pct']:.1f}%"
+                        )
+                        st.markdown(
+                            f"- Neutro/processual fora do indice: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
+                        )
+                    else:
+                        st.info("Ainda nao ha massa critica de desfechos uteis para medir favorabilidade do tema.")
+                    st.markdown("**Mudanca recente do padrao**")
+                    if int(mudanca_padrao.get("janela_meses", 0) or 0) > 0:
+                        st.markdown(f"- Leitura principal: {mudanca_label}")
+                        st.markdown(
+                            f"- Janela recente: {', '.join(mudanca_padrao.get('meses_recentes', [])) or 'sem base'}"
+                        )
+                        st.markdown(
+                            f"- Janela anterior: {', '.join(mudanca_padrao.get('meses_anteriores', [])) or 'sem base'}"
+                        )
+                        if mudanca_padrao.get("desfecho_lider_recente"):
+                            st.markdown(
+                                f"- Desfecho lider recente: {mudanca_padrao['desfecho_lider_recente']}"
+                            )
+                        if mudanca_padrao.get("desfecho_lider_anterior"):
+                            st.markdown(
+                                f"- Desfecho lider anterior: {mudanca_padrao['desfecho_lider_anterior']}"
+                            )
+                        if mudanca_padrao.get("delta_indice") is not None:
+                            st.markdown(
+                                f"- Variacao do indice de favorabilidade: {float(mudanca_padrao['delta_indice']):+.1f}"
+                            )
+                    else:
+                        st.info("Ainda nao ha meses suficientes com decisao classificada para medir mudanca recente do padrao.")
+                    st.markdown("**Alertas de leitura**")
+                    if alertas_tema:
+                        for alerta in alertas_tema:
+                            st.markdown(f"- {alerta}")
+                    else:
+                        st.success("A leitura deste tema nao ativou alertas metodologicos importantes.")
+                col_rank1, col_rank2 = st.columns(2)
+                with col_rank1:
+                    st.markdown("**Orgaos mais favoraveis**")
+                    st.caption("Ranking com base no indice de favorabilidade estimada, considerando apenas orgaos com base util minima.")
+                    if not ranking_favoraveis.empty:
+                        st.dataframe(ranking_favoraveis, use_container_width=True, height=260)
+                    else:
+                        st.info("Sem base suficiente para ranquear orgaos mais favoraveis neste tema.")
+                with col_rank2:
+                    st.markdown("**Orgaos mais restritivos**")
+                    st.caption("Mostra os orgaos cujo sinal estimado foi mais desfavoravel no tema, respeitando base minima.")
+                    if not ranking_restritivos.empty:
+                        st.dataframe(ranking_restritivos, use_container_width=True, height=260)
+                    else:
+                        st.info("Sem base suficiente para ranquear orgaos mais restritivos neste tema.")
+                col_tempo_chart, col_tempo_table = st.columns(2)
+                with col_tempo_chart:
+                    st.markdown("**Tempo mediano ate o desfecho por orgao**")
+                    st.caption("Mostra quais orgaos tendem a decidir mais rapido ou mais devagar dentro do tema.")
+                    st.pyplot(fig_tempo_por_orgao(tempo_orgaos.head(10)), clear_figure=True)
+                    if not tempo_orgaos.empty:
+                        st.dataframe(tempo_orgaos.head(12), use_container_width=True, height=260)
+                    else:
+                        st.info("Sem base suficiente para comparar tempo mediano por orgao.")
+                with col_tempo_table:
+                    st.markdown("**Estabilidade decisoria por orgao**")
+                    st.caption("Mostra se cada orgao repete mais o mesmo desfecho ou oscila entre sinais diferentes.")
+                    if not estabilidade_orgaos.empty:
+                        st.dataframe(estabilidade_orgaos.head(12), use_container_width=True, height=320)
+                    else:
+                        st.info("Sem base suficiente para medir estabilidade decisoria por orgao.")
+            with tema_tabs[4]:
                 col_classes, col_relacionados = st.columns(2)
                 with col_classes:
                     st.markdown("**Classes mais frequentes neste tema**")
