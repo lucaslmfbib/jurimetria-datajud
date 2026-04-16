@@ -8,7 +8,7 @@ import unicodedata
 
 import pandas as pd
 import requests
-from requests import HTTPError
+from requests import HTTPError, RequestException, Timeout
 import streamlit as st
 
 URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
@@ -17,6 +17,9 @@ CNJ_SIGLAS_URL = "https://www.cnj.jus.br/poder-judiciario/tribunais/"
 CNJ_CLASSES_URL = "https://www.cnj.jus.br/sgt/consulta_publica_classes.php"
 MAX_PAGE_SIZE = 10000
 MAX_TOTAL_SIZE = 50000
+DATAJUD_TIMEOUT_SECONDS = 120
+DATAJUD_RETRYABLE_STATUS = {502, 503, 504}
+DATAJUD_MAX_RETRIES = 2
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -1317,6 +1320,137 @@ def theme_overview_dataframe(df_anpp: pd.DataFrame, max_items: int = 15) -> pd.D
     ]
 
 
+class DataJudRequestError(Exception):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def build_datajud_error_message(
+    status_code: int | None,
+    size: int,
+    numero_processo: str = "",
+    data_inicio: Any = None,
+    data_fim: Any = None,
+) -> str:
+    contexto = "a consulta"
+    if numero_processo:
+        contexto = "a consulta por numero do processo"
+    elif size:
+        contexto = f"a consulta da amostra de {size:,} registros".replace(",", ".")
+
+    periodo = format_periodo_aplicado(data_inicio, data_fim)
+    periodo_texto = f" no periodo {periodo}" if periodo else ""
+
+    if status_code == 401:
+        return (
+            "401 Unauthorized: chave API invalida, expirada ou sem permissao para este endpoint. "
+            "Use no formato 'APIKey ...'."
+        )
+    if status_code == 429:
+        return (
+            f"O DataJud recusou temporariamente {contexto}{periodo_texto} por excesso de requisicoes. "
+            "Espere alguns instantes e tente novamente."
+        )
+    if status_code in DATAJUD_RETRYABLE_STATUS:
+        return (
+            f"O DataJud demorou demais para responder {contexto}{periodo_texto}. "
+            "O app tentou novamente automaticamente, mas a API continuou lenta. "
+            "Tente reduzir a quantidade, aplicar um periodo menor ou repetir a consulta em alguns minutos."
+        )
+    if status_code:
+        return (
+            f"O DataJud retornou erro {status_code} para {contexto}{periodo_texto}. "
+            "Tente novamente em instantes."
+        )
+    return (
+        f"Nao foi possivel concluir {contexto}{periodo_texto} por instabilidade na comunicacao com o DataJud. "
+        "Tente novamente em alguns minutos."
+    )
+
+
+def post_datajud_with_retry(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    size: int,
+    numero_processo: str = "",
+    data_inicio: Any = None,
+    data_fim: Any = None,
+) -> requests.Response:
+    last_error: Exception | None = None
+    for tentativa in range(DATAJUD_MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=DATAJUD_TIMEOUT_SECONDS,
+            )
+            if response.status_code in DATAJUD_RETRYABLE_STATUS and tentativa < DATAJUD_MAX_RETRIES:
+                time.sleep(1.2 * (tentativa + 1))
+                continue
+            response.raise_for_status()
+            return response
+        except Timeout as exc:
+            last_error = exc
+            if tentativa < DATAJUD_MAX_RETRIES:
+                time.sleep(1.2 * (tentativa + 1))
+                continue
+            raise DataJudRequestError(
+                build_datajud_error_message(
+                    504,
+                    size=size,
+                    numero_processo=numero_processo,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                ),
+                status_code=504,
+            ) from exc
+        except HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status in DATAJUD_RETRYABLE_STATUS and tentativa < DATAJUD_MAX_RETRIES:
+                time.sleep(1.2 * (tentativa + 1))
+                continue
+            raise DataJudRequestError(
+                build_datajud_error_message(
+                    status,
+                    size=size,
+                    numero_processo=numero_processo,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                ),
+                status_code=status,
+            ) from exc
+        except RequestException as exc:
+            last_error = exc
+            if tentativa < DATAJUD_MAX_RETRIES:
+                time.sleep(1.2 * (tentativa + 1))
+                continue
+            raise DataJudRequestError(
+                build_datajud_error_message(
+                    None,
+                    size=size,
+                    numero_processo=numero_processo,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                ),
+                status_code=None,
+            ) from exc
+
+    raise DataJudRequestError(
+        build_datajud_error_message(
+            None,
+            size=size,
+            numero_processo=numero_processo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        ),
+        status_code=None,
+    ) from last_error
+
+
 @st.cache_data(show_spinner=False, ttl=1200)
 def fetch_hits(
     api_key: str,
@@ -1374,8 +1508,15 @@ def fetch_hits(
     }
 
     if size <= MAX_PAGE_SIZE:
-        response = requests.post(url, headers=headers, json=payload, timeout=120)
-        response.raise_for_status()
+        response = post_datajud_with_retry(
+            url=url,
+            headers=headers,
+            payload=payload,
+            size=size,
+            numero_processo=numero_limpo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
         data = response.json()
         return data.get("hits", {}).get("hits", [])
 
@@ -1395,8 +1536,15 @@ def fetch_hits(
         if search_after is not None:
             paged_payload["search_after"] = search_after
 
-        response = requests.post(url, headers=headers, json=paged_payload, timeout=120)
-        response.raise_for_status()
+        response = post_datajud_with_retry(
+            url=url,
+            headers=headers,
+            payload=paged_payload,
+            size=page_size,
+            numero_processo=numero_limpo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        )
         data = response.json()
         page_hits = data.get("hits", {}).get("hits", [])
         if not page_hits:
@@ -2331,6 +2479,7 @@ def render() -> None:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
 
     if executar:
+        st.session_state["avisos_consulta"] = []
         if not api_key:
             st.error("API Key ausente. Configure DATAJUD_API_KEY no servidor.")
             return
@@ -2343,6 +2492,7 @@ def render() -> None:
 
         with st.spinner("Buscando dados no DataJud..."):
             started = time.perf_counter()
+            avisos_consulta: list[str] = []
             try:
                 usar_numero_processo = bool(normalize_numero_processo(numero_processo))
                 data_inicio_consulta = None if usar_numero_processo else data_inicio
@@ -2375,42 +2525,56 @@ def render() -> None:
 
                 if not usar_numero_processo:
                     if modo_rapido:
-                        hits_decisao = fetch_hits(
+                        try:
+                            hits_decisao = fetch_hits(
+                                api_key=api_key,
+                                classe_codigo=int(classe_codigo),
+                                size=decisao_size,
+                                url=url,
+                                numero_processo="",
+                                data_inicio=data_inicio_consulta,
+                                data_fim=data_fim_consulta,
+                                incluir_movimentos=True,
+                                modo_consulta="classe_ou_processo",
+                            )
+                            df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
+                        except DataJudRequestError as exc:
+                            avisos_consulta.append(
+                                "Nao consegui montar a leitura decisoria complementar nesta tentativa. "
+                                f"{exc}"
+                            )
+                            df_decisao = pd.DataFrame()
+                    else:
+                        df_decisao = df_anpp.head(decisao_size).copy()
+
+                    if not df_decisao.empty:
+                        df_decisao = enrich_decision_proxy_dataframe(df_decisao)
+                        df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
+                        qtd_decisao = len(df_decisao)
+
+                    try:
+                        hits_mapa = fetch_hits(
                             api_key=api_key,
                             classe_codigo=int(classe_codigo),
-                            size=decisao_size,
+                            size=mapa_size,
                             url=url,
                             numero_processo="",
                             data_inicio=data_inicio_consulta,
                             data_fim=data_fim_consulta,
-                            incluir_movimentos=True,
-                            modo_consulta="classe_ou_processo",
+                            incluir_movimentos=False,
+                            modo_consulta="mapa_tribunal",
                         )
-                        df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
-                    else:
-                        df_decisao = df_anpp.head(decisao_size).copy()
-
-                    df_decisao = enrich_decision_proxy_dataframe(df_decisao)
-                    df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
-                    qtd_decisao = len(df_decisao)
-
-                    hits_mapa = fetch_hits(
-                        api_key=api_key,
-                        classe_codigo=int(classe_codigo),
-                        size=mapa_size,
-                        url=url,
-                        numero_processo="",
-                        data_inicio=data_inicio_consulta,
-                        data_fim=data_fim_consulta,
-                        incluir_movimentos=False,
-                        modo_consulta="mapa_tribunal",
-                    )
-                    df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
-                    df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
-                    top_codigos = top_codigos_dataframe(df_mapa)
-                    top_classes = top_classes_dataframe(df_mapa)
-                    top_assuntos = top_assuntos_dataframe(df_mapa)
-                    qtd_mapa = len(df_mapa)
+                        df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
+                        df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
+                        top_codigos = top_codigos_dataframe(df_mapa)
+                        top_classes = top_classes_dataframe(df_mapa)
+                        top_assuntos = top_assuntos_dataframe(df_mapa)
+                        qtd_mapa = len(df_mapa)
+                    except DataJudRequestError as exc:
+                        avisos_consulta.append(
+                            "Nao consegui montar o mapa automatico da sigla nesta tentativa. "
+                            f"{exc}"
+                        )
 
                 # Se a amostra vier curta para histórico mensal, tenta ampliar só para o gráfico.
                 df_mensal = df_anpp
@@ -2441,17 +2605,25 @@ def render() -> None:
                                 st.info(
                                     "Para o gráfico mensal, usei amostra ampliada (10.000 registros)."
                                 )
+                        except DataJudRequestError as exc:
+                            avisos_consulta.append(
+                                "Nao consegui ampliar o historico mensal nesta tentativa. "
+                                f"{exc}"
+                            )
                         except Exception:
                             pass
+            except DataJudRequestError as exc:
+                st.error(str(exc))
+                return
             except HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
-                if status == 401:
-                    st.error(
-                        "401 Unauthorized: chave API invalida/expirada ou sem permissao para este endpoint. "
-                        "Use no formato 'APIKey ...'."
-                    )
-                else:
-                    st.exception(exc)
+                st.error(build_datajud_error_message(status, size=int(size), numero_processo=numero_processo))
+                return
+            except RequestException:
+                st.error(
+                    "Nao foi possivel se comunicar com o DataJud nesta tentativa. "
+                    "Tente novamente em alguns minutos."
+                )
                 return
             except Exception as exc:
                 st.exception(exc)
@@ -2473,6 +2645,7 @@ def render() -> None:
         st.session_state["estrutura_filtro"] = estrutura_filtro
         st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
         st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
+        st.session_state["avisos_consulta"] = avisos_consulta
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -2492,6 +2665,7 @@ def render() -> None:
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
     periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
+    avisos_consulta = st.session_state.get("avisos_consulta", [])
     df_view = dataframe_for_display(df_anpp, max_rows=400)
     top_100_df = top_100_to_dataframe(top_100)
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
@@ -2523,6 +2697,8 @@ def render() -> None:
         st.caption(
             "O filtro temporal foi ignorado porque a consulta por numero do processo prioriza o caso exato."
         )
+    for aviso in avisos_consulta:
+        st.warning(aviso)
 
     if not assuntos_distintos.empty:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
