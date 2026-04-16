@@ -1127,6 +1127,92 @@ def decision_coverage_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def theme_sample_strength_label(total_processos: int, com_desfecho: int) -> str:
+    if total_processos >= 100 and com_desfecho >= 30:
+        return "Alta"
+    if total_processos >= 30 and com_desfecho >= 10:
+        return "Media"
+    return "Baixa"
+
+
+def theme_concentration_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns:
+        return {
+            "total_com_orgao": 0,
+            "top_orgao": "",
+            "top_orgao_qtd": 0,
+            "top_orgao_share": 0.0,
+            "top3_qtd": 0,
+            "top3_share": 0.0,
+        }
+
+    orgaos = df_anpp["orgao_julgador"].fillna("").astype(str).str.strip()
+    orgaos = orgaos[orgaos != ""]
+    if orgaos.empty:
+        return {
+            "total_com_orgao": 0,
+            "top_orgao": "",
+            "top_orgao_qtd": 0,
+            "top_orgao_share": 0.0,
+            "top3_qtd": 0,
+            "top3_share": 0.0,
+        }
+
+    contagem = orgaos.value_counts()
+    total = int(contagem.sum())
+    top_orgao = str(contagem.index[0])
+    top_orgao_qtd = int(contagem.iloc[0])
+    top3_qtd = int(contagem.head(3).sum())
+    return {
+        "total_com_orgao": total,
+        "top_orgao": top_orgao,
+        "top_orgao_qtd": top_orgao_qtd,
+        "top_orgao_share": (top_orgao_qtd / total * 100) if total else 0.0,
+        "top3_qtd": top3_qtd,
+        "top3_share": (top3_qtd / total * 100) if total else 0.0,
+    }
+
+
+def theme_monthly_counts(df_anpp: pd.DataFrame, max_meses: int = 12) -> pd.Series:
+    return monthly_counts(df_anpp, max_meses=max_meses)
+
+
+def theme_recent_trend_summary(df_anpp: pd.DataFrame, max_meses: int = 12) -> dict[str, Any]:
+    serie = theme_monthly_counts(df_anpp, max_meses=max_meses)
+    if serie.empty:
+        return {
+            "serie": serie,
+            "meses_base": 0,
+            "ultimo_mes": "",
+            "ultimo_valor": 0,
+            "variacao_pct": None,
+            "tendencia": "Sem dados",
+        }
+
+    ultimo_idx = serie.index[-1]
+    ultimo_valor = int(serie.iloc[-1])
+    variacao_pct = None
+    tendencia = "Estavel"
+    if len(serie) >= 2:
+        penultimo_valor = int(serie.iloc[-2])
+        if penultimo_valor > 0:
+            variacao_pct = ((int(serie.iloc[-1]) - penultimo_valor) / penultimo_valor) * 100
+            if variacao_pct > 5:
+                tendencia = "Alta recente"
+            elif variacao_pct < -5:
+                tendencia = "Queda recente"
+        elif ultimo_valor > 0:
+            tendencia = "Alta recente"
+    return {
+        "serie": serie,
+        "meses_base": len(serie),
+        "ultimo_mes": ultimo_idx.strftime("%m/%Y"),
+        "ultimo_valor": ultimo_valor,
+        "variacao_pct": variacao_pct,
+        "tendencia": tendencia,
+    }
+
+
 def related_themes_dataframe(df_anpp: pd.DataFrame, tema: str, max_items: int = 10) -> pd.DataFrame:
     if df_anpp.empty or "assuntos" not in df_anpp.columns or not tema:
         return pd.DataFrame(columns=["tema_relacionado", "quantidade"])
@@ -1630,6 +1716,9 @@ def build_decision_theme_insights(
     desfechos_tema: pd.DataFrame,
     movimentos_tema: pd.DataFrame,
     orgaos_tema: pd.DataFrame,
+    forca_tema: str,
+    concentracao_tema: dict[str, Any],
+    tendencia_tema: dict[str, Any],
 ) -> list[str]:
     if total_tema <= 0:
         return ["Sem dados suficientes para gerar insights automáticos deste tema."]
@@ -1663,6 +1752,27 @@ def build_decision_theme_insights(
         insights.append(
             f"O órgão com mais processos deste tema na amostra foi `{linha['orgao_julgador']}`; nele, o desfecho predominante foi `{linha['desfecho_predominante']}`."
         )
+    insights.append(
+        f"A robustez estatística desta leitura temática foi classificada como `{forca_tema}`, considerando o volume da amostra e a cobertura de desfechos identificados."
+    )
+    if concentracao_tema.get("top_orgao"):
+        insights.append(
+            f"O órgão líder do tema foi `{concentracao_tema['top_orgao']}`, com {concentracao_tema['top_orgao_share']:.1f}% dos processos com órgão identificado; "
+            f"os 3 principais órgãos concentram {concentracao_tema['top3_share']:.1f}% da amostra temática com órgão."
+        )
+    if tendencia_tema.get("ultimo_mes"):
+        ultimo_mes = str(tendencia_tema["ultimo_mes"])
+        ultimo_valor = format_int_br(tendencia_tema.get("ultimo_valor", 0))
+        tendencia = str(tendencia_tema.get("tendencia", "Sem dados"))
+        variacao_pct = tendencia_tema.get("variacao_pct")
+        if variacao_pct is not None:
+            insights.append(
+                f"Na série recente do tema, o último mês disponível foi `{ultimo_mes}`, com {ultimo_valor} processos, em um cenário de `{tendencia.lower()}` ({variacao_pct:+.1f}% frente ao mês anterior)."
+            )
+        else:
+            insights.append(
+                f"Na série recente do tema, o último mês disponível foi `{ultimo_mes}`, com {ultimo_valor} processos, em um cenário de `{tendencia.lower()}`."
+            )
     return insights
 
 
@@ -2043,6 +2153,39 @@ def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
     ax.set_title("Desfecho por orgao julgador")
     ax.grid(axis="x", linestyle="--", alpha=0.25)
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.35), ncol=2, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+def fig_tendencia_tema(serie: pd.Series, tema: str) -> Any:
+    plt = get_plt()
+    titulo = "Evolucao mensal do tema"
+    if serie.empty:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title(titulo)
+        ax.text(0.5, 0.5, "Sem dados suficientes para a serie mensal deste tema.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    labels = [idx.strftime("%m/%Y") for idx in serie.index]
+    posicoes = list(range(len(serie)))
+    valores = pd.to_numeric(serie, errors="coerce").fillna(0.0).tolist()
+    tema_curto = tema if len(tema) <= 48 else tema[:48] + "..."
+
+    fig, ax = plt.subplots(figsize=(9.4, 4.2))
+    ax.plot(posicoes, valores, color="#59A14F", linewidth=2.4, marker="o", markersize=6)
+    ax.fill_between(posicoes, valores, color="#59A14F", alpha=0.12)
+    ax.set_title(f"{titulo}: {tema_curto}")
+    ax.set_xlabel("Meses")
+    ax.set_ylabel("Quantidade")
+    ax.set_xticks(posicoes)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+    max_valor = max(valores) if valores else 0.0
+    for i, valor in enumerate(valores):
+        ax.text(i, valor + max(max_valor * 0.02, 0.3), str(int(valor)), ha="center", va="bottom", fontsize=9)
+
     fig.tight_layout()
     return fig
 
@@ -2435,6 +2578,12 @@ def render() -> None:
             classes_tema = top_classes_dataframe(df_tema_decisao)
             temas_relacionados = related_themes_dataframe(df_tema_decisao, tema_escolhido)
             cobertura_tema = decision_coverage_summary(df_tema_decisao)
+            forca_tema = theme_sample_strength_label(
+                int(cobertura_tema["total_processos"]),
+                int(cobertura_tema["com_desfecho"]),
+            )
+            concentracao_tema = theme_concentration_summary(df_tema_decisao)
+            tendencia_tema = theme_recent_trend_summary(df_tema_decisao)
             total_tema = int(cobertura_tema["total_processos"])
             total_com_desfecho = int(cobertura_tema["com_desfecho"])
             total_com_movimento = int(cobertura_tema["com_movimento_final"])
@@ -2454,12 +2603,31 @@ def render() -> None:
                 df_tema_decisao["dias_ate_decisao_proxy"], errors="coerce"
             ).dropna()
             mediana_dias = f"{dias_decisao.median():.0f} dias" if not dias_decisao.empty else "-"
+            top_orgao_tema = str(concentracao_tema.get("top_orgao", "")).strip()
+            top_orgao_tema_curto = (
+                top_orgao_tema if len(top_orgao_tema) <= 42 else top_orgao_tema[:42] + "..."
+            )
+            top_orgao_share = float(concentracao_tema.get("top_orgao_share", 0.0) or 0.0)
+            top3_share = float(concentracao_tema.get("top3_share", 0.0) or 0.0)
+            total_com_orgao = int(concentracao_tema.get("total_com_orgao", 0) or 0)
+            tendencia_label = str(tendencia_tema.get("tendencia", "Sem dados"))
+            tendencia_delta = (
+                f"{float(tendencia_tema['variacao_pct']):+.1f}% vs mes anterior"
+                if tendencia_tema.get("variacao_pct") is not None
+                else None
+            )
+            serie_tema = tendencia_tema.get("serie", pd.Series(dtype="int64"))
 
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Processos do tema", f"{total_tema:,}".replace(",", "."))
             d2.metric("Desfecho classificado", f"{cobertura:.1f}%")
             d3.metric("Desfecho predominante", desfecho_predominante_card)
             d4.metric("Movimento final identificado", f"{cobertura_movimento:.1f}%")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Robustez da amostra", forca_tema)
+            e2.metric("Concentracao lider", f"{top_orgao_share:.1f}%")
+            e3.metric("Top 3 orgaos", f"{top3_share:.1f}%")
+            e4.metric("Tendencia recente", tendencia_label, delta=tendencia_delta)
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
                 total_tema,
@@ -2467,13 +2635,24 @@ def render() -> None:
                 desfechos_tema,
                 movimentos_tema,
                 orgaos_tema,
+                forca_tema,
+                concentracao_tema,
+                tendencia_tema,
             )
             tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Orgaos", "Contexto do tema"])
             with tema_tabs[0]:
                 st.caption(
                     "Aqui o app resume o tema escolhido com base nos processos da amostra e nos movimentos mais recentes encontrados."
                 )
-                col_r1, col_r2 = st.columns(2)
+                if forca_tema == "Baixa":
+                    st.info(
+                        "A amostra deste tema ainda e pequena ou tem pouca cobertura de desfechos. Use a leitura como sinal inicial, nao como padrao fechado."
+                    )
+                elif forca_tema == "Media":
+                    st.caption(
+                        "A leitura deste tema ja ajuda na estrategia, mas ainda vale conferir o contexto dos orgaos e dos movimentos finais."
+                    )
+                col_r1, col_r2, col_r3 = st.columns(3)
                 with col_r1:
                     st.markdown("**Cobertura da leitura**")
                     st.markdown(
@@ -2492,6 +2671,44 @@ def render() -> None:
                         )
                     else:
                         st.markdown("- Movimento final mais frequente: sem leitura")
+                with col_r3:
+                    st.markdown("**Robustez e concentracao**")
+                    st.markdown(f"- Robustez estatistica da leitura: {forca_tema}")
+                    if top_orgao_tema:
+                        st.markdown(
+                            f"- Orgao lider do tema: {top_orgao_tema_curto} ({top_orgao_share:.1f}% dos processos com orgao identificado)"
+                        )
+                    else:
+                        st.markdown("- Orgao lider do tema: sem identificacao suficiente")
+                    if total_com_orgao:
+                        st.markdown(
+                            f"- Top 3 orgaos na amostra: {top3_share:.1f}% dos {format_int_br(total_com_orgao)} processos com orgao identificado"
+                        )
+                    else:
+                        st.markdown("- Top 3 orgaos na amostra: sem base suficiente")
+                st.markdown("**Evolucao mensal deste tema**")
+                st.caption("Mostra se o volume recente do tema sobe, cai ou permanece estavel nos meses disponiveis da amostra.")
+                col_trend_chart, col_trend_notes = st.columns([1.4, 1.0])
+                with col_trend_chart:
+                    st.pyplot(fig_tendencia_tema(serie_tema, tema_escolhido), clear_figure=True)
+                with col_trend_notes:
+                    st.markdown("**Leitura da tendencia**")
+                    if tendencia_tema.get("ultimo_mes"):
+                        st.markdown(
+                            f"- Ultimo mes disponivel: {tendencia_tema['ultimo_mes']} com {format_int_br(tendencia_tema['ultimo_valor'])} processos"
+                        )
+                    else:
+                        st.markdown("- Ultimo mes disponivel: sem base suficiente")
+                    st.markdown(f"- Sinal recente: {tendencia_label}")
+                    if tendencia_tema.get("variacao_pct") is not None:
+                        st.markdown(
+                            f"- Variacao frente ao mes anterior: {float(tendencia_tema['variacao_pct']):+.1f}%"
+                        )
+                    else:
+                        st.markdown("- Variacao frente ao mes anterior: sem comparacao disponivel")
+                    st.markdown(
+                        f"- Janela observada: {format_int_br(tendencia_tema.get('meses_base', 0))} meses"
+                    )
             with tema_tabs[1]:
                 col_desfechos, col_movimentos = st.columns(2)
                 with col_desfechos:
