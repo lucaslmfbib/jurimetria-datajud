@@ -2939,6 +2939,35 @@ def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
 
 def render() -> None:
     st.set_page_config(page_title="Jurimetria com a API DataJud", layout="wide")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMetric"] {
+            min-height: 8.2rem;
+        }
+        div[data-testid="stMetricLabel"] p {
+            white-space: normal !important;
+        }
+        div[data-testid="stMetricValue"] {
+            overflow: visible !important;
+        }
+        div[data-testid="stMetricValue"] > div {
+            font-size: clamp(1.8rem, 2.2vw, 3.1rem) !important;
+            line-height: 1.05 !important;
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            word-break: break-word !important;
+        }
+        div[data-testid="stMetricDelta"] > div {
+            white-space: normal !important;
+            font-size: 0.95rem !important;
+            line-height: 1.15 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title("Jurimetria com a API DataJud")
     st.markdown(
         "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
@@ -3434,6 +3463,11 @@ def render() -> None:
             e2.metric("Favorabilidade estimada", leitura_favorabilidade, delta=delta_favorabilidade)
             e3.metric("Estabilidade decisoria", perfil_estabilidade, delta=delta_estabilidade)
             e4.metric("Mudanca recente", mudanca_label, delta=delta_mudanca)
+            st.caption(
+                "Legenda: desfecho predominante = sinal mais comum; robustez = forca da base; "
+                "favorabilidade = tendencia mais pro ou contra; estabilidade = repeticao do padrao; "
+                "mudanca recente = se esse comportamento mudou nos ultimos meses."
+            )
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
                 total_tema,
