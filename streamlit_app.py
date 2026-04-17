@@ -3784,15 +3784,16 @@ def render() -> None:
         st.markdown(
             "[Onde obter API Key (DataJud Wiki)](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
         )
+        st.markdown("**1. Onde pesquisar**")
         tribunal_sigla = st.text_input(
-            "Tribunal (sigla)",
+            "Tribunal (sigla CNJ)",
             value="tjmg",
             help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
         )
         st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
         estrutura_info = get_estrutura_options(tribunal_sigla)
         estrutura_filtro = st.selectbox(
-            "Instancia / estrutura do tribunal (opcional)",
+            "Recorte estrutural (opcional)",
             options=estrutura_info["opcoes"],
             index=0,
             format_func=format_estrutura_option,
@@ -3800,28 +3801,62 @@ def render() -> None:
         )
         st.caption(describe_estrutura_option(estrutura_filtro))
         st.caption(str(estrutura_info["observacao"]))
-        classe_codigo = st.number_input(
-            "Classe codigo",
-            min_value=1,
-            value=12729,
-            step=1,
+        st.markdown("**2. Como pesquisar**")
+        modo_busca_sidebar = st.radio(
+            "Modo de busca",
+            options=["classe", "tema", "processo"],
+            format_func=lambda valor: {
+                "classe": "Classe processual",
+                "tema": "Tema no tribunal",
+                "processo": "Numero do processo",
+            }[valor],
+            help="Escolha o caminho mais intuitivo para a consulta.",
         )
-        render_codigo_sugestoes(tribunal_sigla)
-        st.markdown(
-            f"[Consultar codigos de classe (CNJ)]({CNJ_CLASSES_URL})"
-        )
-        numero_processo = st.text_input(
-            "Numero do processo (opcional)",
-            placeholder="Ex.: 50012345620248130024",
-            help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
-        )
-        aplicar_periodo = st.checkbox(
-            "Filtrar por periodo de ajuizamento",
-            value=False,
-            help="Limita a amostra a um intervalo de datas de ajuizamento.",
-        )
+        if modo_busca_sidebar == "classe":
+            st.caption("Use quando voce souber a classe processual e quiser refinar com um tema opcional.")
+        elif modo_busca_sidebar == "tema":
+            st.caption("Use quando quiser pesquisar direto por um assunto, como `estupro`, em todo o tribunal.")
+        else:
+            st.caption("Use para abrir um processo especifico pelo numero unico.")
+
+        if "classe_codigo_sidebar" not in st.session_state:
+            st.session_state["classe_codigo_sidebar"] = 12729
+        classe_codigo = int(st.session_state.get("classe_codigo_sidebar", 12729) or 12729)
+        if modo_busca_sidebar == "classe":
+            classe_codigo = int(
+                st.number_input(
+                    "Classe processual (codigo CNJ)",
+                    min_value=1,
+                    step=1,
+                    key="classe_codigo_sidebar",
+                    help="Codigo CNJ do tipo de processo ou recurso, como apelacao, cumprimento de sentenca ou execucao fiscal.",
+                )
+            )
+            render_codigo_sugestoes(tribunal_sigla)
+            st.markdown(
+                f"[Consultar codigos de classe (CNJ)]({CNJ_CLASSES_URL})"
+            )
+
+        numero_processo = ""
+        if modo_busca_sidebar == "processo":
+            numero_processo = st.text_input(
+                "Numero do processo",
+                key="numero_processo_sidebar",
+                placeholder="Ex.: 50012345620248130024",
+                help="Consulta o caso exato pelo numero unico do processo.",
+            )
+
+        aplicar_periodo = False
         data_inicio = None
         data_fim = None
+        if modo_busca_sidebar != "processo":
+            aplicar_periodo = st.checkbox(
+                "Filtrar por periodo de ajuizamento",
+                value=False,
+                help="Limita a amostra a um intervalo de datas de ajuizamento.",
+            )
+        else:
+            st.caption("No modo por numero do processo, o app ignora periodo e outros filtros para priorizar o caso exato.")
         if aplicar_periodo:
             hoje = date.today()
             inicio_padrao = date(hoje.year, 1, 1)
@@ -3839,7 +3874,7 @@ def render() -> None:
             periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
             if periodo_legivel:
                 st.caption(f"Periodo aplicado: {periodo_legivel}")
-        usar_numero_processo_sidebar = bool(normalize_numero_processo(numero_processo))
+        usar_numero_processo_sidebar = modo_busca_sidebar == "processo"
         tema_cache_key = build_theme_suggestion_cache_key(
             tribunal_sigla=tribunal_sigla,
             classe_codigo=classe_codigo,
@@ -3882,131 +3917,126 @@ def render() -> None:
             or st.session_state.get(tema_select_key, "")
         )
         tema_consulta = tema_atual_sidebar
-        busca_tema_direto_sidebar = False
+        busca_tema_direto_sidebar = modo_busca_sidebar == "tema"
         if usar_numero_processo_sidebar:
-            st.caption("A lista de temas fica desativada quando a busca e por numero do processo.")
-            st.text_input(
-                "Tema",
-                value=tema_atual_sidebar,
-                disabled=True,
-                key="tema_consulta_text_disabled",
+            pass
+        elif modo_busca_sidebar == "tema":
+            tema_consulta = normalize_assunto_filtro(
+                st.text_input(
+                    "Tema principal",
+                    key=tema_text_key,
+                    placeholder="Ex.: estupro, trafico de drogas, improbidade administrativa",
+                    help="Busca o assunto diretamente em todo o tribunal selecionado.",
+                )
             )
+            st.caption("Aqui o tema vira o filtro principal da consulta dentro do tribunal escolhido.")
         else:
             tema_consulta = normalize_assunto_filtro(
                 st.text_input(
-                    "Tema",
+                    "Tema (opcional)",
                     key=tema_text_key,
-                    placeholder="Digite um tema para filtrar a consulta",
-                    help="Voce pode digitar diretamente ou usar a lista de temas sugeridos abaixo.",
+                    placeholder="Digite um tema para refinar a classe processual",
+                    help="Use para afunilar a classe processual por assunto.",
                 )
             )
-            busca_tema_direto_sidebar = st.checkbox(
-                "Pesquisar este tema em todo o tribunal",
-                value=False,
-                help="Ignora o codigo da classe e busca o tema diretamente na sigla selecionada.",
-            )
-            if busca_tema_direto_sidebar:
-                st.caption(
-                    "Neste modo, o app usa o Tema como filtro principal dentro do tribunal selecionado e ignora o codigo da classe."
-                )
-            else:
-                if st.button(
-                    "Carregar temas sugeridos",
-                    key="carregar_temas_codigo_sigla",
-                    use_container_width=True,
+            if st.button(
+                "Carregar temas sugeridos",
+                key="carregar_temas_codigo_sigla",
+                use_container_width=True,
+            ):
+                temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
+                if current_query_can_seed_theme_suggestions(
+                    classe_codigo=classe_codigo,
+                    tribunal_sigla=tribunal_sigla,
+                    estrutura_filtro=estrutura_filtro,
+                    data_inicio=data_inicio if aplicar_periodo else None,
+                    data_fim=data_fim if aplicar_periodo else None,
                 ):
-                    temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
-                    if current_query_can_seed_theme_suggestions(
-                        classe_codigo=classe_codigo,
-                        tribunal_sigla=tribunal_sigla,
-                        estrutura_filtro=estrutura_filtro,
-                        data_inicio=data_inicio if aplicar_periodo else None,
-                        data_fim=data_fim if aplicar_periodo else None,
-                    ):
-                        temas_da_consulta_atual = build_theme_suggestions_from_current_query()
-                    if not temas_da_consulta_atual.empty:
-                        st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
-                        st.session_state[tema_sugestoes_status_key] = (
-                            f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
+                    temas_da_consulta_atual = build_theme_suggestions_from_current_query()
+                if not temas_da_consulta_atual.empty:
+                    st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
+                    st.session_state[tema_sugestoes_status_key] = (
+                        f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
+                    )
+                    st.rerun()
+                with st.spinner("Carregando temas sugeridos..."):
+                    try:
+                        tema_sugestoes_df = fetch_theme_suggestions_dataframe(
+                            api_key=api_key,
+                            classe_codigo=int(classe_codigo),
+                            url=build_url(tribunal_sigla),
+                            tribunal_sigla=tribunal_sigla,
+                            estrutura_filtro=estrutura_filtro,
+                            data_inicio=data_inicio if aplicar_periodo else None,
+                            data_fim=data_fim if aplicar_periodo else None,
                         )
-                        st.rerun()
-                    with st.spinner("Carregando temas sugeridos..."):
-                        try:
-                            tema_sugestoes_df = fetch_theme_suggestions_dataframe(
-                                api_key=api_key,
-                                classe_codigo=int(classe_codigo),
-                                url=build_url(tribunal_sigla),
-                                tribunal_sigla=tribunal_sigla,
-                                estrutura_filtro=estrutura_filtro,
-                                data_inicio=data_inicio if aplicar_periodo else None,
-                                data_fim=data_fim if aplicar_periodo else None,
-                            )
-                        except DataJudRequestError:
-                            tema_sugestoes_erro = (
-                                "Os temas sugeridos demoraram demais para carregar no DataJud. "
+                    except DataJudRequestError:
+                        tema_sugestoes_erro = (
+                            "Os temas sugeridos demoraram demais para carregar no DataJud. "
+                            "Voce ainda pode digitar o tema manualmente."
+                        )
+                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                    except Exception:
+                        tema_sugestoes_erro = (
+                            "A lista de temas nao ficou disponivel nesta tentativa."
+                        )
+                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                    else:
+                        st.session_state[tema_sugestoes_key] = tema_sugestoes_df
+                        if tema_sugestoes_df.empty:
+                            st.session_state[tema_sugestoes_status_key] = (
+                                "Nao encontrei temas sugeridos nesta amostra. "
                                 "Voce ainda pode digitar o tema manualmente."
                             )
-                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                        except Exception:
-                            tema_sugestoes_erro = (
-                                "A lista de temas nao ficou disponivel nesta tentativa."
-                            )
-                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
                         else:
-                            st.session_state[tema_sugestoes_key] = tema_sugestoes_df
-                            if tema_sugestoes_df.empty:
-                                st.session_state[tema_sugestoes_status_key] = (
-                                    "Nao encontrei temas sugeridos nesta amostra. "
-                                    "Voce ainda pode digitar o tema manualmente."
-                                )
-                            else:
-                                st.session_state[tema_sugestoes_status_key] = (
-                                    f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
-                                )
-                            st.rerun()
-                if tema_sugestoes_status:
-                    st.caption(tema_sugestoes_status)
+                            st.session_state[tema_sugestoes_status_key] = (
+                                f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
+                            )
+                        st.rerun()
+            if tema_sugestoes_status:
+                st.caption(tema_sugestoes_status)
+            else:
+                st.caption(
+                    "Se quiser ajuda para preencher o campo, carregue os temas sugeridos para esta combinacao de tribunal e classe."
+                )
+            if tema_sugestoes:
+                busca_local = normalize_assunto_filtro(
+                    st.text_input(
+                        "Pesquisar nos temas sugeridos",
+                        key=tema_busca_key,
+                        placeholder="Filtre as sugestoes por palavra-chave",
+                    )
+                )
+                temas_filtrados = [
+                    tema for tema in tema_sugestoes
+                    if busca_local.lower() in tema.lower()
+                ] if busca_local else tema_sugestoes
+                tema_options = [""] + temas_filtrados
+                if tema_consulta and tema_consulta not in tema_options:
+                    tema_options.append(tema_consulta)
+                if st.session_state.get(tema_select_key) not in tema_options:
+                    st.session_state[tema_select_key] = (
+                        tema_consulta if tema_consulta in tema_options else ""
+                    )
+                st.selectbox(
+                    "Selecionar tema sugerido",
+                    options=tema_options,
+                    key=tema_select_key,
+                    format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
+                    help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
+                    on_change=sync_tema_text_from_select,
+                )
+                if busca_local and not temas_filtrados:
+                    st.caption("Nenhum tema sugerido bateu com essa busca.")
                 else:
                     st.caption(
-                        "Se quiser ajuda para preencher o campo, carregue os temas sugeridos para esta combinacao de tribunal e classe."
+                        f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
                     )
-                if tema_sugestoes:
-                    busca_local = normalize_assunto_filtro(
-                        st.text_input(
-                            "Pesquisar nos temas sugeridos",
-                            key=tema_busca_key,
-                            placeholder="Filtre as sugestoes por palavra-chave",
-                        )
-                    )
-                    temas_filtrados = [
-                        tema for tema in tema_sugestoes
-                        if busca_local.lower() in tema.lower()
-                    ] if busca_local else tema_sugestoes
-                    tema_options = [""] + temas_filtrados
-                    if tema_consulta and tema_consulta not in tema_options:
-                        tema_options.append(tema_consulta)
-                    if st.session_state.get(tema_select_key) not in tema_options:
-                        st.session_state[tema_select_key] = (
-                            tema_consulta if tema_consulta in tema_options else ""
-                        )
-                    st.selectbox(
-                        "Selecionar tema sugerido",
-                        options=tema_options,
-                        key=tema_select_key,
-                        format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
-                        help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
-                        on_change=sync_tema_text_from_select,
-                    )
-                    if busca_local and not temas_filtrados:
-                        st.caption("Nenhum tema sugerido bateu com essa busca.")
-                    else:
-                        st.caption(
-                            f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
-                        )
         if tema_consulta and not usar_numero_processo_sidebar:
             st.caption(
                 "Com um tema selecionado, a quantidade da consulta passa a contar apenas processos que tenham esse assunto."
             )
+        st.markdown("**3. Tamanho e velocidade**")
         st.caption(
             "No modo rapido, o app prioriza a resposta principal. Em buscas pequenas, ele pode reduzir ou pular leituras complementares para responder mais rapido."
         )
@@ -4025,7 +4055,7 @@ def render() -> None:
             value=False,
             help="Ative para ver fluxo mensal, tempo de tramitacao e heatmap.",
         )
-        size = st.number_input("Quantidade", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
+        size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         if size > MAX_PAGE_SIZE:
             st.info(
                 "Acima de 10.000 registros, o app pagina automaticamente a consulta no DataJud. "
@@ -4034,7 +4064,7 @@ def render() -> None:
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         st.caption(f"URL usada: {url}")
-        executar = st.button("Executar consulta", use_container_width=True)
+        executar = st.button("Buscar no DataJud", use_container_width=True)
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
 
@@ -4061,6 +4091,9 @@ def render() -> None:
                 modo_consulta_base = "tema_direto" if busca_tema_direto else "classe_ou_processo"
                 data_inicio_consulta = None if usar_numero_processo else data_inicio
                 data_fim_consulta = None if usar_numero_processo else data_fim
+                if modo_busca_sidebar == "processo" and not usar_numero_processo:
+                    st.error("Preencha o numero do processo para usar esse modo de busca.")
+                    return
                 if busca_tema_direto_sidebar and not tema_consulta_limpo and not usar_numero_processo:
                     st.error("Preencha o campo Tema para usar a busca direta por tema no tribunal.")
                     return
@@ -4271,7 +4304,7 @@ def render() -> None:
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
-        st.info("Preencha a chave e clique em 'Executar consulta'. Comece com 1000 ou 2000 registros.")
+        st.info("Preencha os filtros e clique em 'Buscar no DataJud'. Comece com 1000 ou 2000 registros.")
         return
 
     df_anpp = st.session_state["df_anpp"]
