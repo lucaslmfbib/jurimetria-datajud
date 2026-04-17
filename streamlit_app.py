@@ -2742,7 +2742,7 @@ def build_sample_insights(
 
 def build_map_insights(
     top_codigos: pd.DataFrame,
-    top_classes: pd.DataFrame,
+    top_orgaos_sigla: pd.DataFrame,
     top_assuntos: pd.DataFrame,
     qtd_mapa: int,
 ) -> list[str]:
@@ -2757,10 +2757,10 @@ def build_map_insights(
             f"O código mais frequente no mapa da sigla é `{linha['classe_codigo']}`, ligado à classe `{linha['classe']}`, "
             f"com {format_int_br(linha['quantidade'])} ocorrências."
         )
-    if isinstance(top_classes, pd.DataFrame) and not top_classes.empty:
-        linha = top_classes.iloc[0]
+    if isinstance(top_orgaos_sigla, pd.DataFrame) and not top_orgaos_sigla.empty:
+        linha = top_orgaos_sigla.iloc[0]
         insights.append(
-            f"A classe mais frequente no mapa da sigla é `{linha['classe']}`, com {format_int_br(linha['quantidade'])} registros."
+            f"O órgão julgador mais frequente no mapa da sigla é `{linha['orgao_julgador']}`, com {format_int_br(linha['quantidade'])} registros."
         )
     if isinstance(top_assuntos, pd.DataFrame) and not top_assuntos.empty:
         linha = top_assuntos.iloc[0]
@@ -2775,7 +2775,7 @@ def build_query_derived_state(
     df_mensal: pd.DataFrame,
     top_100: pd.Series,
     top_codigos: pd.DataFrame,
-    top_classes: pd.DataFrame,
+    top_orgaos_sigla: pd.DataFrame,
     top_assuntos: pd.DataFrame,
     df_decisao: pd.DataFrame,
     qtd_mapa: int,
@@ -2784,7 +2784,7 @@ def build_query_derived_state(
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
-    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
+    map_insights = build_map_insights(top_codigos, top_orgaos_sigla, top_assuntos, qtd_mapa)
 
     temas_decisao = pd.DataFrame(columns=["assunto", "quantidade"])
     temas_overview = pd.DataFrame(
@@ -2889,7 +2889,7 @@ def replace_decision_state_in_session(
         df_mensal=st.session_state.get("df_mensal", pd.DataFrame()),
         top_100=st.session_state.get("top_100", pd.Series(dtype="int64")),
         top_codigos=st.session_state.get("top_codigos", pd.DataFrame()),
-        top_classes=st.session_state.get("top_classes", pd.DataFrame()),
+        top_orgaos_sigla=st.session_state.get("top_orgaos_sigla", pd.DataFrame()),
         top_assuntos=st.session_state.get("top_assuntos", pd.DataFrame()),
         df_decisao=df_decisao,
         qtd_mapa=int(st.session_state.get("qtd_mapa", 0) or 0),
@@ -4127,7 +4127,7 @@ def render() -> None:
                 mapa_size = 0
                 decisao_size = 0
                 top_codigos = pd.DataFrame()
-                top_classes = pd.DataFrame()
+                top_orgaos_sigla = pd.DataFrame()
                 top_assuntos = pd.DataFrame()
                 df_decisao = pd.DataFrame()
                 qtd_mapa = 0
@@ -4195,7 +4195,7 @@ def render() -> None:
                             df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
                             df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
                             top_codigos = top_codigos_dataframe(df_mapa)
-                            top_classes = top_classes_dataframe(df_mapa)
+                            top_orgaos_sigla = top_orgaos_julgadores_dataframe(df_mapa)
                             top_assuntos = top_assuntos_dataframe(df_mapa)
                             qtd_mapa = len(df_mapa)
                         except DataJudRequestError as exc:
@@ -4266,7 +4266,7 @@ def render() -> None:
         st.session_state["sigla_mapa"] = tribunal_sigla
         st.session_state["qtd_mapa"] = qtd_mapa
         st.session_state["top_codigos"] = top_codigos
-        st.session_state["top_classes"] = top_classes
+        st.session_state["top_orgaos_sigla"] = top_orgaos_sigla
         st.session_state["top_assuntos"] = top_assuntos
         st.session_state["df_decisao"] = df_decisao
         st.session_state["qtd_decisao"] = qtd_decisao
@@ -4296,7 +4296,7 @@ def render() -> None:
             df_mensal=df_mensal,
             top_100=top_100,
             top_codigos=top_codigos,
-            top_classes=top_classes,
+            top_orgaos_sigla=top_orgaos_sigla,
             top_assuntos=top_assuntos,
             df_decisao=df_decisao,
             qtd_mapa=qtd_mapa,
@@ -4311,7 +4311,7 @@ def render() -> None:
     df_mensal = st.session_state.get("df_mensal", df_anpp)
     top_100 = st.session_state["top_100"]
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
-    top_classes = st.session_state.get("top_classes", pd.DataFrame())
+    top_orgaos_sigla = st.session_state.get("top_orgaos_sigla", pd.DataFrame())
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
     df_decisao = st.session_state.get("df_decisao", pd.DataFrame())
     if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty and "comparativo_orgao" not in df_decisao.columns:
@@ -4334,7 +4334,7 @@ def render() -> None:
             df_mensal=df_mensal,
             top_100=top_100,
             top_codigos=top_codigos,
-            top_classes=top_classes,
+            top_orgaos_sigla=top_orgaos_sigla,
             top_assuntos=top_assuntos,
             df_decisao=df_decisao,
             qtd_mapa=qtd_mapa,
@@ -5287,13 +5287,16 @@ def render() -> None:
             st.caption(mensagem_mapa)
         else:
             st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
-        col_codigos, col_classes, col_assuntos = st.columns(3)
+        col_codigos, col_orgaos, col_assuntos = st.columns(3)
         with col_codigos:
             st.markdown("**Top 10 codigos**")
             st.dataframe(top_codigos, use_container_width=True, height=320)
-        with col_classes:
-            st.markdown("**Top 10 classes**")
-            st.dataframe(top_classes, use_container_width=True, height=320)
+        with col_orgaos:
+            st.markdown("**Top 10 orgaos julgadores**")
+            if isinstance(top_orgaos_sigla, pd.DataFrame) and not top_orgaos_sigla.empty:
+                st.dataframe(top_orgaos_sigla, use_container_width=True, height=320)
+            else:
+                st.info("Sem base suficiente para ranquear orgaos julgadores neste mapa.")
         with col_assuntos:
             st.markdown("**Top 10 assuntos**")
             st.dataframe(top_assuntos, use_container_width=True, height=320)
