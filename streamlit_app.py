@@ -28,6 +28,8 @@ FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
+THEME_SUGGESTION_SAMPLE_SIZE = 500
+THEME_SUGGESTION_MAX_ITEMS = 80
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -3038,6 +3040,35 @@ def top_assuntos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.Dat
     return assuntos.value_counts().head(max_items).rename_axis("assunto").reset_index(name="quantidade")
 
 
+@st.cache_data(show_spinner=False, ttl=1200)
+def fetch_theme_suggestions_dataframe(
+    api_key: str,
+    classe_codigo: int,
+    url: str,
+    tribunal_sigla: str,
+    estrutura_filtro: str = "Todos",
+    data_inicio: Any = None,
+    data_fim: Any = None,
+    sample_size: int = THEME_SUGGESTION_SAMPLE_SIZE,
+    max_items: int = THEME_SUGGESTION_MAX_ITEMS,
+) -> pd.DataFrame:
+    hits = fetch_hits(
+        api_key=api_key,
+        classe_codigo=int(classe_codigo),
+        size=int(sample_size),
+        url=url,
+        numero_processo="",
+        assunto_nome="",
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+        incluir_movimentos=False,
+        modo_consulta="classe_ou_processo",
+    )
+    df_sugestoes = hits_to_dataframe(hits, processar_movimentos=False)
+    df_sugestoes = filter_dataframe_by_estrutura(df_sugestoes, tribunal_sigla, estrutura_filtro)
+    return top_assuntos_dataframe(df_sugestoes, max_items=max_items)
+
+
 def assuntos_distintos_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
     if df_anpp.empty or "assuntos" not in df_anpp.columns:
         return pd.DataFrame(columns=["assunto", "quantidade"])
@@ -3703,11 +3734,6 @@ def render() -> None:
             placeholder="Ex.: 50012345620248130024",
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
         )
-        tema_consulta = st.text_input(
-            "Tema / assunto (opcional)",
-            placeholder="Ex.: trafico de drogas, dano moral, improbidade",
-            help="Afina a busca dentro da classe e do tribunal usando o assunto do processo no DataJud.",
-        )
         aplicar_periodo = st.checkbox(
             "Filtrar por periodo de ajuizamento",
             value=False,
@@ -3732,6 +3758,73 @@ def render() -> None:
             periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
             if periodo_legivel:
                 st.caption(f"Periodo aplicado: {periodo_legivel}")
+        usar_numero_processo_sidebar = bool(normalize_numero_processo(numero_processo))
+        tema_sugestoes_df = pd.DataFrame(columns=["assunto", "quantidade"])
+        tema_sugestoes_erro = ""
+        if api_key and not usar_numero_processo_sidebar:
+            try:
+                tema_sugestoes_df = fetch_theme_suggestions_dataframe(
+                    api_key=api_key,
+                    classe_codigo=int(classe_codigo),
+                    url=build_url(tribunal_sigla),
+                    tribunal_sigla=tribunal_sigla,
+                    estrutura_filtro=estrutura_filtro,
+                    data_inicio=data_inicio if aplicar_periodo else None,
+                    data_fim=data_fim if aplicar_periodo else None,
+                )
+            except DataJudRequestError:
+                tema_sugestoes_erro = (
+                    "Nao consegui carregar a lista de temas sugeridos agora. "
+                    "Voce ainda pode usar a busca sem esse filtro."
+                )
+            except Exception:
+                tema_sugestoes_erro = (
+                    "A lista de temas sugeridos nao ficou disponivel nesta tentativa."
+                )
+
+        tema_sugestoes = (
+            tema_sugestoes_df["assunto"].dropna().astype(str).str.strip().tolist()
+            if not tema_sugestoes_df.empty
+            else []
+        )
+        tema_sugestoes = [tema for tema in tema_sugestoes if tema]
+        tema_select_key = "tema_consulta_select"
+        tema_atual_sidebar = normalize_assunto_filtro(
+            st.session_state.get(tema_select_key, "")
+            or st.session_state.get("tema_consulta_text_fallback", "")
+            or st.session_state.get("tema_consulta_aplicado", "")
+        )
+        tema_options = [""] + tema_sugestoes
+        if tema_atual_sidebar and tema_atual_sidebar not in tema_options:
+            tema_options.append(tema_atual_sidebar)
+
+        if tema_sugestoes:
+            if st.session_state.get(tema_select_key) not in tema_options:
+                st.session_state[tema_select_key] = tema_atual_sidebar if tema_atual_sidebar in tema_options else ""
+            tema_consulta = st.selectbox(
+                "Tema / assunto (opcional)",
+                options=tema_options,
+                key=tema_select_key,
+                format_func=lambda valor: "Todos os temas" if not valor else valor,
+                help="Comece a digitar para filtrar a lista de temas sugeridos para esta combinacao de tribunal e classe.",
+            )
+            st.caption(
+                f"Lista sugerida com ate {format_int_br(len(tema_sugestoes))} temas frequentes para esta combinacao de tribunal e classe."
+            )
+        else:
+            tema_consulta = st.text_input(
+                "Tema / assunto (opcional)",
+                value=tema_atual_sidebar,
+                placeholder="Ex.: trafico de drogas, dano moral, improbidade",
+                help="Afina a busca dentro da classe e do tribunal usando o assunto do processo no DataJud.",
+                key="tema_consulta_text_fallback",
+            )
+            if tema_sugestoes_erro:
+                st.caption(tema_sugestoes_erro)
+            else:
+                st.caption(
+                    "Quando a lista sugerida estiver disponivel, este campo vira um seletor com busca."
+                )
         st.caption(
             "No modo rapido, o app prioriza a resposta principal. Em buscas pequenas, ele pode reduzir ou pular leituras complementares para responder mais rapido."
         )
