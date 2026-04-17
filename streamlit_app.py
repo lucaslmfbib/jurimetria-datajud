@@ -31,6 +31,7 @@ STRATEGY_RELOAD_MAX_SIZE = 3000
 THEME_SUGGESTION_SAMPLE_SIZE = 800
 THEME_SUGGESTION_MAX_ITEMS = 500
 THEME_SUGGESTION_TIMEOUT_SECONDS = 18
+APP_VERSION_LABEL = "Versao esperada: 17/04/2026 | Ajuste de Classes com mais processos"
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -3833,6 +3834,7 @@ def render() -> None:
         unsafe_allow_html=True,
     )
     st.title("Jurimetria com a API DataJud")
+    st.caption(APP_VERSION_LABEL)
     st.markdown(
         "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
         "GitHub: [@lucaslmfbib](https://github.com/lucaslmfbib) | "
