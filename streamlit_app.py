@@ -3884,7 +3884,7 @@ def render() -> None:
         if modo_busca_sidebar == "classe":
             st.caption("Escolha a classe e, se quiser, refine por tema.")
         elif modo_busca_sidebar == "tema":
-            st.caption("Pesquise um assunto direto no tribunal, como `estupro`.")
+            st.caption("Pesquise um assunto direto no tribunal, como `plano de saude`.")
         else:
             st.caption("Busque um caso especifico pelo numero unico.")
 
@@ -3994,7 +3994,7 @@ def render() -> None:
                 st.text_input(
                     "Tema principal",
                     key=tema_text_key,
-                    placeholder="Ex.: estupro, trafico de drogas, improbidade administrativa",
+                    placeholder="Ex.: plano de saude, consumidor, servidor publico",
                     help="Use o assunto como filtro principal.",
                 )
             )
