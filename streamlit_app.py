@@ -26,7 +26,6 @@ DATAJUD_MAX_RETRIES = 2
 FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
 FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
-THEME_DIRECT_FAST_QUERY_LIMIT = 250
 THEME_DIRECT_FAST_DECISION_LIMIT = 0
 THEME_DIRECT_TIMEOUT_SECONDS = 30
 STRATEGY_RELOAD_MIN_SIZE = 1200
@@ -4134,7 +4133,7 @@ def render() -> None:
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         if modo_busca_sidebar == "tema" and modo_rapido:
             st.caption(
-                f"Na busca por tema com modo rapido, o app usa ate {format_int_br(THEME_DIRECT_FAST_QUERY_LIMIT)} registros para responder mais cedo."
+                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida e reduz apenas as leituras complementares."
             )
         if size > MAX_PAGE_SIZE:
             st.info(
@@ -4185,17 +4184,10 @@ def render() -> None:
                     avisos_consulta.append(
                         "Busca direta por tema ativa: o app ignorou o codigo da classe e pesquisou este tema no tribunal selecionado."
                     )
-                    if modo_rapido and int(size) > THEME_DIRECT_FAST_QUERY_LIMIT:
-                        avisos_consulta.append(
-                            "Busca por tema em modo rapido: para responder mais cedo, usei uma amostra menor. "
-                            "Se voce quiser forcar a quantidade inteira, desligue o modo rapido."
-                        )
                 size_efetivo = int(size)
                 timeout_consulta = DATAJUD_TIMEOUT_SECONDS
                 if busca_tema_direto:
                     timeout_consulta = THEME_DIRECT_TIMEOUT_SECONDS
-                    if modo_rapido:
-                        size_efetivo = min(size_efetivo, THEME_DIRECT_FAST_QUERY_LIMIT)
                 hits = fetch_hits(
                     api_key=api_key,
                     classe_codigo=classe_codigo_consulta,
