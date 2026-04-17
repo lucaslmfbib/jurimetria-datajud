@@ -4367,7 +4367,19 @@ def render() -> None:
     avisos_consulta = st.session_state.get("avisos_consulta", [])
     last_query_context = st.session_state.get("last_query_context", {})
     derived_state = st.session_state.get("derived_state")
-    if not isinstance(derived_state, dict):
+    derived_state_required_keys = {
+        "df_view",
+        "top_100_df",
+        "top_orgaos_df",
+        "top_comarcas_df",
+        "sample_insights",
+        "map_insights",
+        "assuntos_distintos",
+        "total_assuntos",
+        "temas_decisao",
+        "temas_overview",
+    }
+    if not isinstance(derived_state, dict) or not derived_state_required_keys.issubset(derived_state.keys()):
         derived_state = build_query_derived_state(
             df_anpp=df_anpp,
             df_mensal=df_mensal,
@@ -4382,7 +4394,7 @@ def render() -> None:
     df_view = derived_state["df_view"]
     top_100_df = derived_state["top_100_df"]
     top_orgaos_df = derived_state["top_orgaos_df"]
-    top_comarcas_df = derived_state["top_comarcas_df"]
+    top_comarcas_df = derived_state.get("top_comarcas_df", top_comarcas_dataframe(df_anpp))
     sample_insights = derived_state["sample_insights"]
     map_insights = derived_state["map_insights"]
     tema_insights: list[str] = []
