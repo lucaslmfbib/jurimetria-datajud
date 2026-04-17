@@ -2605,7 +2605,7 @@ def format_duration_label(value_in_days: Any) -> str:
     if valor < 0:
         return "-"
     if valor == 0:
-        return "Mesmo dia"
+        return "No mesmo dia"
     if valor < 1:
         return f"{valor * 24:.1f} h"
     if valor < 10:
@@ -3590,7 +3590,7 @@ def fig_favorabilidade_por_orgao(
 
 def fig_tempo_por_orgao(
     df_tempo: pd.DataFrame,
-    titulo: str = "Tempo mediano por orgao",
+    titulo: str = "Tempo mediano ate o primeiro desfecho identificado por orgao",
     eixo_label: str = "Orgao julgador",
 ) -> Any:
     plt = get_plt()
@@ -3624,11 +3624,11 @@ def fig_tempo_por_orgao(
     usar_horas = max_valor_dias < 1
     if usar_horas:
         valores_plot = valores * 24
-        xlabel = "Mediana de horas ate o desfecho"
+        xlabel = "Mediana de horas ate o primeiro desfecho identificado"
         formatador = lambda valor: f"{valor:.1f} h"
     else:
         valores_plot = valores
-        xlabel = "Mediana de dias ate o desfecho"
+        xlabel = "Mediana de dias ate o primeiro desfecho identificado"
         formatador = lambda valor: f"{valor:.1f}" if valor < 10 else f"{valor:.0f}"
 
     max_valor = float(valores_plot.max()) if not valores_plot.empty else 0.0
@@ -4629,7 +4629,9 @@ def render() -> None:
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
             if "mediana_dias" in orgaos_tema_view.columns:
-                orgaos_tema_view["mediana_ate_desfecho"] = orgaos_tema_view["mediana_dias"].apply(format_duration_label)
+                orgaos_tema_view["mediana_ate_primeiro_desfecho"] = orgaos_tema_view["mediana_dias"].apply(
+                    format_duration_label
+                )
                 orgaos_tema_view = orgaos_tema_view.drop(columns=["mediana_dias"])
             favorabilidade_orgaos_view = favorabilidade_orgaos.rename(
                 columns={"orgao_julgador": coluna_tabela_comparativa}
@@ -4662,11 +4664,11 @@ def render() -> None:
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
             if "mediana_dias" in tempo_orgaos_plot_view.columns:
-                tempo_orgaos_plot_view["mediana_ate_desfecho"] = tempo_orgaos_plot_view["mediana_dias"].apply(
+                tempo_orgaos_plot_view["mediana_ate_primeiro_desfecho"] = tempo_orgaos_plot_view["mediana_dias"].apply(
                     format_duration_label
                 )
             if "p75_dias" in tempo_orgaos_plot_view.columns:
-                tempo_orgaos_plot_view["p75_ate_desfecho"] = tempo_orgaos_plot_view["p75_dias"].apply(
+                tempo_orgaos_plot_view["p75_ate_primeiro_desfecho"] = tempo_orgaos_plot_view["p75_dias"].apply(
                     format_duration_label
                 )
             tempo_orgaos_plot_view = tempo_orgaos_plot_view.drop(
@@ -4764,7 +4766,7 @@ def render() -> None:
                     st.markdown(
                         f"- Processos com desfecho classificado automaticamente: {format_int_br(total_com_desfecho)} ({cobertura:.1f}%)"
                     )
-                    st.markdown(f"- Mediana ate o desfecho identificado: {mediana_dias}")
+                    st.markdown(f"- Mediana ate o primeiro desfecho identificado: {mediana_dias}")
                 with col_r2:
                     st.markdown("**Sinal principal do tema**")
                     st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
@@ -4936,7 +4938,7 @@ def render() -> None:
                 if max_tempo_dias is None:
                     leitura_tempo_label = "Sem base"
                 elif max_tempo_dias <= 0:
-                    leitura_tempo_label = "Mesmo dia"
+                    leitura_tempo_label = "No mesmo dia"
                 elif max_tempo_dias < 1:
                     leitura_tempo_label = "Em horas"
                 else:
@@ -5174,7 +5176,10 @@ def render() -> None:
                 with st.expander("Ver tempo e estabilidade", expanded=not tempo_orgaos_plot.empty):
                     col_tempo_chart, col_tempo_table = st.columns(2)
                     with col_tempo_chart:
-                        st.markdown(f"**Tempo mediano ate o desfecho por {eixo_comparativo.lower()}**")
+                        st.markdown(f"**Tempo mediano ate o primeiro desfecho identificado por {eixo_comparativo.lower()}**")
+                        st.caption(
+                            "Este tempo e um proxy: o app mede do ajuizamento ate o primeiro desfecho que conseguiu identificar nos movimentos, e nao necessariamente ate o fim completo do processo."
+                        )
                         if not tempo_orgaos.empty and tempo_minimo_utilizado < 3:
                             st.caption(
                                 f"Base reduzida para exibicao: minimo de {tempo_minimo_utilizado} processo(s) com tempo por item deste recorte."
@@ -5195,7 +5200,7 @@ def render() -> None:
                         st.pyplot(
                             fig_tempo_por_orgao(
                                 tempo_orgaos_plot.head(10),
-                                titulo=f"Tempo mediano por {eixo_comparativo.lower()}",
+                                titulo=f"Tempo mediano ate o primeiro desfecho identificado por {eixo_comparativo.lower()}",
                                 eixo_label=eixo_comparativo,
                             ),
                             clear_figure=True,
@@ -5204,7 +5209,7 @@ def render() -> None:
                             st.dataframe(tempo_orgaos_plot_view.head(12), use_container_width=True, height=260)
                         else:
                             st.info(
-                                f"Sem base suficiente para comparar tempo mediano por {rotulo_comparativo.lower()}."
+                                f"Sem base suficiente para comparar esse tempo por {rotulo_comparativo.lower()}."
                             )
                     with col_tempo_table:
                         st.markdown(f"**Estabilidade decisoria por {eixo_comparativo.lower()}**")
