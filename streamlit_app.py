@@ -26,7 +26,6 @@ DATAJUD_MAX_RETRIES = 2
 FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
 FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
-THEME_DIRECT_PAGE_SIZE = 150
 THEME_DIRECT_FAST_DECISION_LIMIT = 0
 THEME_DIRECT_TIMEOUT_SECONDS = 30
 STRATEGY_RELOAD_MIN_SIZE = 1200
@@ -2370,65 +2369,23 @@ def fetch_hits(
         campos_source.append("movimentos")
 
     standard_sort = [{"dataAjuizamento": {"order": "desc"}}]
-    theme_direct_sort = [
-        {"dataAjuizamento": {"order": "desc", "missing": "_last"}},
-        {"id.keyword": {"order": "asc"}},
-    ]
+    use_unsorted_theme_direct = (
+        modo_consulta == "tema_direto"
+        and not numero_limpo
+        and size <= MAX_PAGE_SIZE
+    )
     payload = {
         "size": size,
         "_source": campos_source,
         "query": query,
-        "sort": standard_sort,
         "track_total_hits": False,
     }
+    if not use_unsorted_theme_direct:
+        payload["sort"] = standard_sort
     headers = {
         "Authorization": normalize_api_key(api_key),
         "Content-Type": "application/json",
     }
-
-    use_theme_direct_paging = (
-        modo_consulta == "tema_direto"
-        and not numero_limpo
-        and size > THEME_DIRECT_PAGE_SIZE
-        and size <= MAX_PAGE_SIZE
-    )
-    if use_theme_direct_paging:
-        all_hits: list[dict[str, Any]] = []
-        search_after: Any = None
-
-        while len(all_hits) < size:
-            page_size = min(THEME_DIRECT_PAGE_SIZE, size - len(all_hits))
-            paged_payload = {
-                "size": page_size,
-                "_source": campos_source,
-                "query": query,
-                "sort": theme_direct_sort,
-                "track_total_hits": False,
-            }
-            if search_after is not None:
-                paged_payload["search_after"] = search_after
-
-            response = post_datajud_with_retry(
-                url=url,
-                headers=headers,
-                payload=paged_payload,
-                size=size,
-                numero_processo=numero_limpo,
-                data_inicio=data_inicio,
-                data_fim=data_fim,
-                timeout_seconds=timeout_seconds,
-            )
-            data = response.json()
-            page_hits = data.get("hits", {}).get("hits", [])
-            if not page_hits:
-                break
-
-            all_hits.extend(page_hits)
-            search_after = page_hits[-1].get("sort")
-            if not search_after or len(page_hits) < page_size:
-                break
-
-        return all_hits
 
     if size <= MAX_PAGE_SIZE:
         response = post_datajud_with_retry(
@@ -4183,7 +4140,7 @@ def render() -> None:
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         if modo_busca_sidebar == "tema" and modo_rapido:
             st.caption(
-                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida, busca em blocos menores e reduz apenas as leituras complementares."
+                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida, reduz as leituras complementares e organiza a amostra por data dentro do proprio app."
             )
         if size > MAX_PAGE_SIZE:
             st.info(
