@@ -26,6 +26,9 @@ DATAJUD_MAX_RETRIES = 2
 FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
 FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
+THEME_DIRECT_FAST_QUERY_LIMIT = 350
+THEME_DIRECT_FAST_DECISION_LIMIT = 150
+THEME_DIRECT_TIMEOUT_SECONDS = 45
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
 THEME_SUGGESTION_SAMPLE_SIZE = 800
@@ -2891,6 +2894,7 @@ def fetch_strategy_decision_dataframe(
     query_size = int(query_context.get("query_size", 0) or 0)
     qtd_decisao_atual = int(query_context.get("qtd_decisao", 0) or 0)
     decision_size = int(target_size or strategy_reload_target_size(query_size, qtd_decisao_atual))
+    timeout_seconds = THEME_DIRECT_TIMEOUT_SECONDS if busca_tema_direto else DATAJUD_TIMEOUT_SECONDS
 
     if not api_key or not url or not tribunal_sigla or (not busca_tema_direto and not classe_codigo):
         raise ValueError("Nao encontrei os parametros da ultima consulta para ampliar a leitura estrategica.")
@@ -2906,6 +2910,7 @@ def fetch_strategy_decision_dataframe(
         data_fim=query_context.get("data_fim_consulta"),
         incluir_movimentos=True,
         modo_consulta="tema_direto" if busca_tema_direto else "classe_ou_processo",
+        timeout_seconds=timeout_seconds,
     )
     df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
     if df_decisao.empty:
@@ -4125,6 +4130,10 @@ def render() -> None:
             help="Mostra graficos extras.",
         )
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
+        if modo_busca_sidebar == "tema" and modo_rapido:
+            st.caption(
+                f"Na busca por tema com modo rapido, o app usa ate {format_int_br(THEME_DIRECT_FAST_QUERY_LIMIT)} registros para responder mais cedo."
+            )
         if size > MAX_PAGE_SIZE:
             st.info(
                 "Acima de 10.000 registros, o app pagina automaticamente a consulta no DataJud. "
@@ -4174,10 +4183,21 @@ def render() -> None:
                     avisos_consulta.append(
                         "Busca direta por tema ativa: o app ignorou o codigo da classe e pesquisou este tema no tribunal selecionado."
                     )
+                    if modo_rapido and int(size) > THEME_DIRECT_FAST_QUERY_LIMIT:
+                        avisos_consulta.append(
+                            "Busca por tema em modo rapido: para responder mais cedo, usei uma amostra menor. "
+                            "Se voce quiser forcar a quantidade inteira, desligue o modo rapido."
+                        )
+                size_efetivo = int(size)
+                timeout_consulta = DATAJUD_TIMEOUT_SECONDS
+                if busca_tema_direto:
+                    timeout_consulta = THEME_DIRECT_TIMEOUT_SECONDS
+                    if modo_rapido:
+                        size_efetivo = min(size_efetivo, THEME_DIRECT_FAST_QUERY_LIMIT)
                 hits = fetch_hits(
                     api_key=api_key,
                     classe_codigo=classe_codigo_consulta,
-                    size=int(size),
+                    size=size_efetivo,
                     url=url,
                     numero_processo=numero_processo,
                     assunto_nome=tema_consulta_limpo,
@@ -4185,6 +4205,7 @@ def render() -> None:
                     data_fim=data_fim_consulta,
                     incluir_movimentos=not modo_rapido,
                     modo_consulta=modo_consulta_base,
+                    timeout_seconds=timeout_consulta,
                 )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 if not usar_numero_processo:
@@ -4192,7 +4213,7 @@ def render() -> None:
                 else:
                     df_anpp = add_estrutura_column(df_anpp, tribunal_sigla)
                 top_100 = build_top_100(df_anpp)
-                size_int = int(size)
+                size_int = int(size_efetivo)
                 mapa_size = 0
                 decisao_size = 0
                 top_codigos = pd.DataFrame()
@@ -4205,12 +4226,20 @@ def render() -> None:
                 if not usar_numero_processo:
                     if modo_rapido:
                         if size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
-                            decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
-                            mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
+                            if busca_tema_direto:
+                                decisao_size = min(size_int, THEME_DIRECT_FAST_DECISION_LIMIT)
+                            else:
+                                decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
+                                mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
                         else:
-                            avisos_consulta.append(
-                                "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
-                            )
+                            if busca_tema_direto:
+                                avisos_consulta.append(
+                                    "Busca por tema em modo rapido: o app priorizou a resposta principal, pulou a leitura decisoria complementar e reaproveitou a propria amostra para o mapa."
+                                )
+                            else:
+                                avisos_consulta.append(
+                                    "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
+                                )
                     else:
                         mapa_size = min(max(size_int, 2000), MAX_PAGE_SIZE)
                         decisao_size = min(max(size_int, 400), 1200)
@@ -4247,7 +4276,12 @@ def render() -> None:
                         df_decisao = add_comparison_columns(df_decisao)
                         qtd_decisao = len(df_decisao)
 
-                    if mapa_size > 0:
+                    if busca_tema_direto and not df_anpp.empty:
+                        top_codigos = top_codigos_dataframe(df_anpp)
+                        top_orgaos_sigla = top_orgaos_julgadores_dataframe(df_anpp)
+                        top_assuntos = top_assuntos_dataframe(df_anpp)
+                        qtd_mapa = len(df_anpp)
+                    elif mapa_size > 0:
                         try:
                             hits_mapa = fetch_hits(
                                 api_key=api_key,
@@ -4260,6 +4294,7 @@ def render() -> None:
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
                                 modo_consulta="mapa_tribunal",
+                                timeout_seconds=timeout_consulta,
                             )
                             df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
                             df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
@@ -4290,6 +4325,7 @@ def render() -> None:
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
                                 modo_consulta=modo_consulta_base,
+                                timeout_seconds=timeout_consulta,
                             )
                             df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
                             df_mensal_candidato = filter_dataframe_by_estrutura(
@@ -4355,7 +4391,8 @@ def render() -> None:
             "data_inicio_consulta": data_inicio_consulta,
             "data_fim_consulta": data_fim_consulta,
             "tema_consulta": tema_consulta_limpo,
-            "query_size": int(size),
+            "query_size": int(size_int),
+            "query_size_requested": int(size),
             "qtd_decisao": qtd_decisao,
             "usar_numero_processo": bool(usar_numero_processo),
             "busca_tema_direto": bool(busca_tema_direto),
