@@ -1,8 +1,10 @@
 from datetime import date, datetime, time as dt_time
+from functools import lru_cache
 import html
 import io
 import importlib
 import os
+import re
 import time
 from typing import Any
 import unicodedata
@@ -21,6 +23,11 @@ MAX_TOTAL_SIZE = 50000
 DATAJUD_TIMEOUT_SECONDS = 120
 DATAJUD_RETRYABLE_STATUS = {502, 503, 504}
 DATAJUD_MAX_RETRIES = 2
+FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
+FAST_DECISION_SAMPLE_LIMIT = 250
+FAST_MAP_SAMPLE_LIMIT = 800
+STRATEGY_RELOAD_MIN_SIZE = 1200
+STRATEGY_RELOAD_MAX_SIZE = 3000
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -171,6 +178,55 @@ POLARIDADE_DESFAVORAVEL = "Desfavoravel estimado"
 POLARIDADE_MISTA = "Misto/Parcial"
 POLARIDADE_NEUTRA = "Neutro/Processual"
 POLARIDADE_INDEFINIDA = "Indefinido"
+
+COMPARISON_DIMENSIONS = {
+    "orgao": {
+        "label": "Orgao completo",
+        "column": "comparativo_orgao",
+        "axis_label": "Orgao julgador",
+        "table_label": "Orgao completo",
+        "plural_label": "orgaos completos",
+    },
+    "vara": {
+        "label": "Vara/juizo normalizado",
+        "column": "comparativo_vara",
+        "axis_label": "Vara/juizo ou unidade equivalente",
+        "table_label": "Vara/juizo normalizado",
+        "plural_label": "varas/juizos normalizados",
+    },
+    "comarca": {
+        "label": "Municipio/comarca",
+        "column": "comparativo_comarca",
+        "axis_label": "Municipio/comarca",
+        "table_label": "Municipio/comarca",
+        "plural_label": "municipios/comarcas",
+    },
+}
+
+UNIDADE_NORMALIZADA_PATTERNS = (
+    r"(\d+\s*(?:a|o)?\s*zona eleitoral\b[^,;/()]*)",
+    r"(\d+\s*(?:a|o)?\s*vara\b[^,;/()]*)",
+    r"(vara unica\b[^,;/()]*)",
+    r"(\d+\s*(?:a|o)?\s*juizado\b[^,;/()]*)",
+    r"(juizado especial\b[^,;/()]*)",
+    r"(juizado da fazenda publica\b[^,;/()]*)",
+    r"(turma recursal\b[^,;/()]*)",
+    r"(colegio recursal\b[^,;/()]*)",
+    r"(auditoria\b[^,;/()]*)",
+    r"(juizo\b[^,;/()]*)",
+    r"(camara\b[^,;/()]*)",
+    r"(turma\b[^,;/()]*)",
+    r"(secao\b[^,;/()]*)",
+    r"(gabinete\b[^,;/()]*)",
+    r"(vara\b[^,;/()]*)",
+)
+
+COMARCA_PATTERNS = (
+    r"\bcomarca de ([a-z0-9 ]+)",
+    r"\bforo de ([a-z0-9 ]+)",
+    r"\bsubsecao judiciaria de ([a-z0-9 ]+)",
+    r"\bmunicipio de ([a-z0-9 ]+)",
+)
 
 POLARIDADE_DESFECHO_MAP = {
     "Procedente": POLARIDADE_FAVORAVEL,
@@ -713,14 +769,139 @@ def parse_movimentos(movimentos: Any) -> list[list[Any]]:
     return parsed
 
 
-def normalize_search_text(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return ""
+@lru_cache(maxsize=16384)
+def _normalize_search_text_cached(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text)
     return normalized.encode("ascii", "ignore").decode("ascii")
 
 
+def normalize_search_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return _normalize_search_text_cached(text)
+
+
+def unique_assuntos_list(assuntos: Any) -> list[str]:
+    if not isinstance(assuntos, list):
+        return []
+
+    temas: list[str] = []
+    vistos: set[str] = set()
+    for assunto in assuntos:
+        tema = str(assunto or "").strip()
+        if not tema or tema in vistos:
+            continue
+        vistos.add(tema)
+        temas.append(tema)
+    return temas
+
+
+def clean_normalized_text(text: Any) -> str:
+    normalized = normalize_search_text(text)
+    normalized = re.sub(r"[\(\)\[\];]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" -/,")
+    return normalized
+
+
+def humanize_comparison_label(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" -/,")
+    if not cleaned:
+        return ""
+    preposicoes = {"da", "de", "do", "das", "dos", "e"}
+    partes = []
+    for palavra in cleaned.split():
+        if palavra in preposicoes:
+            partes.append(palavra)
+        elif palavra and palavra[0].isdigit():
+            partes.append(palavra)
+        else:
+            partes.append(palavra.capitalize())
+    return " ".join(partes)
+
+
+@lru_cache(maxsize=8192)
+def normalized_unit_label(orgao_julgador: str) -> str:
+    text = clean_normalized_text(orgao_julgador)
+    if not text:
+        return ""
+
+    for pattern in UNIDADE_NORMALIZADA_PATTERNS:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        candidate = match.group(1).strip()
+        candidate = re.sub(r"\b(?:da|do) comarca de .*$", "", candidate).strip()
+        candidate = re.sub(r"\b(?:da|do) foro de .*$", "", candidate).strip()
+        candidate = re.sub(r"\bda subsecao judiciaria de .*$", "", candidate).strip()
+        return humanize_comparison_label(candidate)
+
+    candidate = re.split(r"[,/\-]", text, maxsplit=1)[0].strip()
+    return humanize_comparison_label(candidate or text)
+
+
+@lru_cache(maxsize=8192)
+def comarca_label_from_orgao(orgao_julgador: str) -> str:
+    text = clean_normalized_text(orgao_julgador)
+    if not text:
+        return ""
+
+    for pattern in COMARCA_PATTERNS:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        nome = humanize_comparison_label(match.group(1))
+        if nome:
+            return f"Comarca de {nome}"
+    return ""
+
+
+def municipio_comarca_label(municipio: Any, orgao_julgador: Any) -> str:
+    comarca = comarca_label_from_orgao(str(orgao_julgador or ""))
+    if comarca:
+        return comarca
+
+    codigo = str(municipio or "").strip()
+    if codigo:
+        return f"Municipio {codigo}"
+
+    return normalized_unit_label(str(orgao_julgador or ""))
+
+
+def add_comparison_columns(df_anpp: pd.DataFrame) -> pd.DataFrame:
+    if df_anpp.empty:
+        return df_anpp.copy()
+
+    df_out = df_anpp.copy()
+    orgaos = (
+        df_out["orgao_julgador"].fillna("").astype(str).str.strip()
+        if "orgao_julgador" in df_out.columns
+        else pd.Series([""] * len(df_out), index=df_out.index)
+    )
+    municipios = (
+        df_out["municipio"].tolist()
+        if "municipio" in df_out.columns
+        else [None] * len(df_out)
+    )
+
+    df_out["comparativo_orgao"] = orgaos
+    df_out["comparativo_vara"] = [normalized_unit_label(orgao) for orgao in orgaos.tolist()]
+    df_out["comparativo_comarca"] = [
+        municipio_comarca_label(municipio, orgao)
+        for municipio, orgao in zip(municipios, orgaos.tolist())
+    ]
+    df_out["comparativo_vara"] = df_out["comparativo_vara"].where(
+        df_out["comparativo_vara"].astype(str).str.strip().ne(""),
+        df_out["comparativo_orgao"],
+    )
+    df_out["comparativo_comarca"] = df_out["comparativo_comarca"].where(
+        df_out["comparativo_comarca"].astype(str).str.strip().ne(""),
+        df_out["comparativo_orgao"],
+    )
+    return df_out
+
+
+@lru_cache(maxsize=16384)
 def is_decisive_movement_name(nome: str) -> bool:
     text = normalize_search_text(nome)
     if not text:
@@ -730,6 +911,7 @@ def is_decisive_movement_name(nome: str) -> bool:
     return any(hint in text for hint in DECISAO_MOVIMENTO_HINTS)
 
 
+@lru_cache(maxsize=16384)
 def classify_decision_outcome(nome: str) -> str:
     text = normalize_search_text(nome)
     if not text:
@@ -1038,84 +1220,121 @@ def decision_movements_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> 
     return base.value_counts().head(max_items).rename_axis("movimento").reset_index(name="quantidade")
 
 
-def decision_by_orgao_dataframe(df_anpp: pd.DataFrame, max_orgaos: int = 10) -> pd.DataFrame:
-    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "processos_tema",
-                "com_desfecho",
-                "cobertura",
-                "desfecho_predominante",
-                "forca_predominante",
-                "mediana_dias",
-            ]
-        )
+def decision_by_orgao_dataframe(
+    df_anpp: pd.DataFrame,
+    max_orgaos: int = 10,
+    group_column: str = "orgao_julgador",
+) -> pd.DataFrame:
+    columns = [
+        "orgao_julgador",
+        "processos_tema",
+        "com_desfecho",
+        "cobertura",
+        "desfecho_predominante",
+        "forca_predominante",
+        "mediana_dias",
+    ]
+    if df_anpp.empty or group_column not in df_anpp.columns:
+        return pd.DataFrame(columns=columns)
 
-    base = df_anpp.copy()
-    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
-    base = base[base["orgao_julgador"] != ""]
+    base = df_anpp[[group_column, "decisao_categoria", "dias_ate_decisao_proxy"]].copy()
+    base[group_column] = base[group_column].fillna("").astype(str).str.strip()
+    base = base[base[group_column] != ""]
     if base.empty:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "processos_tema",
-                "com_desfecho",
-                "cobertura",
-                "desfecho_predominante",
-                "forca_predominante",
-                "mediana_dias",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
-    top_orgaos = base["orgao_julgador"].value_counts().head(max_orgaos).index.tolist()
-    base = base[base["orgao_julgador"].isin(top_orgaos)]
-
-    linhas: list[dict[str, Any]] = []
-    for orgao in top_orgaos:
-        grupo = base[base["orgao_julgador"] == orgao]
-        total = len(grupo)
-        com_desfecho = grupo["decisao_categoria"].fillna("").astype(str).str.strip()
-        com_desfecho = com_desfecho[com_desfecho != ""]
-        qtd_desfecho = len(com_desfecho)
-        cobertura = f"{(qtd_desfecho / total * 100):.1f}%" if total else "0.0%"
-        if qtd_desfecho:
-            contagem = com_desfecho.value_counts()
-            desfecho_predominante = str(contagem.index[0])
-            forca_predominante = f"{(contagem.iloc[0] / qtd_desfecho * 100):.1f}%"
-        else:
-            desfecho_predominante = "Sem leitura"
-            forca_predominante = "-"
-
-        dias = pd.to_numeric(grupo["dias_ate_decisao_proxy"], errors="coerce").dropna()
-        mediana_dias = round(float(dias.median()), 1) if not dias.empty else pd.NA
-
-        linhas.append(
-            {
-                "orgao_julgador": orgao,
-                "processos_tema": total,
-                "com_desfecho": qtd_desfecho,
-                "cobertura": cobertura,
-                "desfecho_predominante": desfecho_predominante,
-                "forca_predominante": forca_predominante,
-                "mediana_dias": mediana_dias,
-            }
-        )
-
-    return pd.DataFrame(linhas)
-
-
-def decision_signal_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
-    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns or "decisao_categoria" not in df_anpp.columns:
-        return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
-
-    base = df_anpp[["orgao_julgador", "decisao_categoria"]].copy()
-    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
+    top_orgaos = base[group_column].value_counts().head(max_orgaos)
+    ordem_orgaos = {orgao: idx for idx, orgao in enumerate(top_orgaos.index)}
+    base = base[base[group_column].isin(top_orgaos.index)].copy()
     base["decisao_categoria"] = base["decisao_categoria"].fillna("").astype(str).str.strip()
-    base = base[(base["orgao_julgador"] != "") & (base["decisao_categoria"] != "")]
+    base["dias_ate_decisao_proxy"] = pd.to_numeric(base["dias_ate_decisao_proxy"], errors="coerce")
+
+    resultado = top_orgaos.rename_axis("orgao_julgador").reset_index(name="processos_tema")
+
+    com_desfecho = base.loc[base["decisao_categoria"] != ""].groupby(group_column).size()
+    resultado["com_desfecho"] = (
+        pd.to_numeric(resultado["orgao_julgador"].map(com_desfecho), errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    resultado["cobertura"] = (
+        (resultado["com_desfecho"] / resultado["processos_tema"] * 100)
+        .round(1)
+        .map(lambda valor: f"{valor:.1f}%")
+    )
+
+    desfechos_validos = base.loc[base["decisao_categoria"] != "", [group_column, "decisao_categoria"]]
+    if desfechos_validos.empty:
+        resultado["desfecho_predominante"] = "Sem leitura"
+        resultado["forca_predominante"] = "-"
+    else:
+        predominantes = (
+            desfechos_validos.groupby([group_column, "decisao_categoria"], as_index=False)
+            .size()
+            .sort_values(
+                [group_column, "size", "decisao_categoria"],
+                ascending=[True, False, True],
+            )
+            .drop_duplicates(subset=[group_column])
+            .rename(
+                columns={
+                    group_column: "orgao_julgador",
+                    "decisao_categoria": "desfecho_predominante",
+                    "size": "quantidade_predominante",
+                }
+            )
+        )
+        resultado = resultado.merge(
+            predominantes[["orgao_julgador", "desfecho_predominante", "quantidade_predominante"]],
+            on="orgao_julgador",
+            how="left",
+        )
+        resultado["desfecho_predominante"] = resultado["desfecho_predominante"].fillna("Sem leitura")
+        resultado["forca_predominante"] = "-"
+        mask_forca = resultado["quantidade_predominante"].notna() & resultado["com_desfecho"].gt(0)
+        resultado.loc[mask_forca, "forca_predominante"] = (
+            (
+                resultado.loc[mask_forca, "quantidade_predominante"]
+                / resultado.loc[mask_forca, "com_desfecho"]
+                * 100
+            )
+            .round(1)
+            .map(lambda valor: f"{valor:.1f}%")
+        )
+        resultado = resultado.drop(columns=["quantidade_predominante"], errors="ignore")
+
+    medianas = base.groupby(group_column)["dias_ate_decisao_proxy"].median()
+    resultado["mediana_dias"] = pd.to_numeric(
+        resultado["orgao_julgador"].map(medianas),
+        errors="coerce",
+    ).round(1)
+    resultado["mediana_dias"] = resultado["mediana_dias"].where(
+        resultado["mediana_dias"].notna(),
+        pd.NA,
+    )
+    resultado["ordem"] = resultado["orgao_julgador"].map(ordem_orgaos)
+    return (
+        resultado.sort_values("ordem")
+        .drop(columns=["ordem"], errors="ignore")
+        .reset_index(drop=True)[columns]
+    )
+
+
+def decision_signal_base_dataframe(
+    df_anpp: pd.DataFrame,
+    group_column: str = "orgao_julgador",
+) -> pd.DataFrame:
+    if df_anpp.empty or group_column not in df_anpp.columns or "decisao_categoria" not in df_anpp.columns:
+        return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
+
+    base = df_anpp[[group_column, "decisao_categoria"]].copy()
+    base[group_column] = base[group_column].fillna("").astype(str).str.strip()
+    base["decisao_categoria"] = base["decisao_categoria"].fillna("").astype(str).str.strip()
+    base = base[(base[group_column] != "") & (base["decisao_categoria"] != "")]
     if base.empty:
         return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria"])
 
+    base = base.rename(columns={group_column: "orgao_julgador"})
     base_sem_generico = base[base["decisao_categoria"] != CATEGORIA_NAO_CLASSIFICADA]
     if not base_sem_generico.empty:
         return base_sem_generico
@@ -1188,12 +1407,15 @@ def stability_label_from_index(indice: float | None) -> str:
     return "Baixa"
 
 
-def decision_polarity_base_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
-    base = decision_signal_base_dataframe(df_anpp)
+def decision_polarity_base_dataframe(
+    df_anpp: pd.DataFrame,
+    group_column: str = "orgao_julgador",
+) -> pd.DataFrame:
+    base = decision_signal_base_dataframe(df_anpp, group_column=group_column)
     if base.empty:
         return pd.DataFrame(columns=["orgao_julgador", "decisao_categoria", "polaridade"])
     base = base.copy()
-    base["polaridade"] = base["decisao_categoria"].apply(outcome_polarity_label)
+    base["polaridade"] = base["decisao_categoria"].map(outcome_polarity_label)
     return base
 
 
@@ -1215,7 +1437,7 @@ def decision_favorability_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
             "leitura_favorabilidade": "Sem base",
         }
 
-    polaridades = categorias.apply(outcome_polarity_label).value_counts()
+    polaridades = categorias.map(outcome_polarity_label).value_counts()
     total_classificados = int(len(categorias))
     favoravel_qtd = int(polaridades.get(POLARIDADE_FAVORAVEL, 0))
     desfavoravel_qtd = int(polaridades.get(POLARIDADE_DESFAVORAVEL, 0))
@@ -1270,159 +1492,226 @@ def decision_favorability_by_orgao_dataframe(
     df_anpp: pd.DataFrame,
     min_decisoes_uteis: int = 5,
     max_items: int | None = 12,
+    group_column: str = "orgao_julgador",
 ) -> pd.DataFrame:
-    base = decision_polarity_base_dataframe(df_anpp)
+    columns = [
+        "orgao_julgador",
+        "decisoes_classificadas",
+        "decisoes_uteis",
+        "favoravel_pct",
+        "desfavoravel_pct",
+        "misto_pct",
+        "indice_favorabilidade",
+        "leitura_favorabilidade",
+    ]
+    base = decision_polarity_base_dataframe(df_anpp, group_column=group_column)
     if base.empty:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "decisoes_classificadas",
-                "decisoes_uteis",
-                "favoravel_pct",
-                "desfavoravel_pct",
-                "misto_pct",
-                "indice_favorabilidade",
-                "leitura_favorabilidade",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
-    linhas: list[dict[str, Any]] = []
-    for orgao, grupo in base.groupby("orgao_julgador"):
-        polaridades = grupo["polaridade"].value_counts()
-        favoravel = int(polaridades.get(POLARIDADE_FAVORAVEL, 0))
-        desfavoravel = int(polaridades.get(POLARIDADE_DESFAVORAVEL, 0))
-        misto = int(polaridades.get(POLARIDADE_MISTA, 0))
-        decisoes_uteis = favoravel + desfavoravel + misto
-        if decisoes_uteis < min_decisoes_uteis:
-            continue
-        indice = favorability_index_from_counts(favoravel, desfavoravel, misto)
-        linhas.append(
-            {
-                "orgao_julgador": orgao,
-                "decisoes_classificadas": int(len(grupo)),
-                "decisoes_uteis": decisoes_uteis,
-                "favoravel_pct": round((favoravel / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
-                "desfavoravel_pct": round((desfavoravel / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
-                "misto_pct": round((misto / decisoes_uteis * 100), 1) if decisoes_uteis else 0.0,
-                "indice_favorabilidade": round(float(indice), 1) if indice is not None else pd.NA,
-                "leitura_favorabilidade": favorability_label_from_index(indice),
-            }
-        )
+    contagem_polaridades = pd.crosstab(base["orgao_julgador"], base["polaridade"]).reindex(
+        columns=[POLARIDADE_FAVORAVEL, POLARIDADE_DESFAVORAVEL, POLARIDADE_MISTA],
+        fill_value=0,
+    )
+    resultado = contagem_polaridades.reset_index().rename(
+        columns={
+            POLARIDADE_FAVORAVEL: "favoravel_qtd",
+            POLARIDADE_DESFAVORAVEL: "desfavoravel_qtd",
+            POLARIDADE_MISTA: "misto_qtd",
+        }
+    )
+    resultado["decisoes_classificadas"] = (
+        base.groupby("orgao_julgador").size().reindex(resultado["orgao_julgador"]).to_numpy()
+    )
+    resultado["decisoes_uteis"] = (
+        resultado["favoravel_qtd"] + resultado["desfavoravel_qtd"] + resultado["misto_qtd"]
+    )
+    resultado = resultado[resultado["decisoes_uteis"] >= int(min_decisoes_uteis)].copy()
+    if resultado.empty:
+        return pd.DataFrame(columns=columns)
 
-    if not linhas:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "decisoes_classificadas",
-                "decisoes_uteis",
-                "favoravel_pct",
-                "desfavoravel_pct",
-                "misto_pct",
-                "indice_favorabilidade",
-                "leitura_favorabilidade",
-            ]
-        )
-
-    resultado = pd.DataFrame(linhas).sort_values(
-        ["indice_favorabilidade", "decisoes_uteis"], ascending=[False, False]
+    indice = (
+        (resultado["favoravel_qtd"] + (0.5 * resultado["misto_qtd"]) - resultado["desfavoravel_qtd"])
+        / resultado["decisoes_uteis"]
+        * 100
+    )
+    resultado["favoravel_pct"] = (resultado["favoravel_qtd"] / resultado["decisoes_uteis"] * 100).round(1)
+    resultado["desfavoravel_pct"] = (resultado["desfavoravel_qtd"] / resultado["decisoes_uteis"] * 100).round(1)
+    resultado["misto_pct"] = (resultado["misto_qtd"] / resultado["decisoes_uteis"] * 100).round(1)
+    resultado["indice_favorabilidade"] = indice.round(1)
+    resultado["leitura_favorabilidade"] = resultado["indice_favorabilidade"].map(
+        lambda valor: favorability_label_from_index(float(valor)) if pd.notna(valor) else "Sem base"
+    )
+    resultado = resultado.sort_values(
+        ["indice_favorabilidade", "decisoes_uteis"],
+        ascending=[False, False],
     )
     if max_items is not None:
         resultado = resultado.head(max_items)
-    return resultado.reset_index(drop=True)
+    return resultado.reset_index(drop=True)[columns]
+
+
+def decision_favorability_by_orgao_with_fallback(
+    df_anpp: pd.DataFrame,
+    preferred_min_decisoes_uteis: int = 5,
+    max_items: int | None = 12,
+    group_column: str = "orgao_julgador",
+) -> tuple[pd.DataFrame, int]:
+    thresholds = [preferred_min_decisoes_uteis, 3, 2, 1]
+    thresholds = list(dict.fromkeys(int(valor) for valor in thresholds if int(valor) > 0))
+
+    for min_decisoes in thresholds:
+        resultado = decision_favorability_by_orgao_dataframe(
+            df_anpp,
+            min_decisoes_uteis=min_decisoes,
+            max_items=max_items,
+            group_column=group_column,
+        )
+        if not resultado.empty:
+            return resultado, min_decisoes
+
+    return decision_favorability_by_orgao_dataframe(
+        df_anpp,
+        min_decisoes_uteis=preferred_min_decisoes_uteis,
+        max_items=max_items,
+        group_column=group_column,
+    ), preferred_min_decisoes_uteis
 
 
 def decision_time_by_orgao_dataframe(
     df_anpp: pd.DataFrame,
     min_processos: int = 3,
     max_items: int | None = 12,
+    group_column: str = "orgao_julgador",
 ) -> pd.DataFrame:
-    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns or "dias_ate_decisao_proxy" not in df_anpp.columns:
-        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+    columns = ["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"]
+    if df_anpp.empty or group_column not in df_anpp.columns or "dias_ate_decisao_proxy" not in df_anpp.columns:
+        return pd.DataFrame(columns=columns)
 
-    base = df_anpp[["orgao_julgador", "dias_ate_decisao_proxy"]].copy()
-    base["orgao_julgador"] = base["orgao_julgador"].fillna("").astype(str).str.strip()
+    base = df_anpp[[group_column, "dias_ate_decisao_proxy"]].copy()
+    base[group_column] = base[group_column].fillna("").astype(str).str.strip()
     base["dias_ate_decisao_proxy"] = pd.to_numeric(base["dias_ate_decisao_proxy"], errors="coerce")
-    base = base[(base["orgao_julgador"] != "") & (base["dias_ate_decisao_proxy"].notna())]
+    base = base[(base[group_column] != "") & (base["dias_ate_decisao_proxy"].notna())]
     if base.empty:
-        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+        return pd.DataFrame(columns=columns)
 
-    linhas: list[dict[str, Any]] = []
-    for orgao, grupo in base.groupby("orgao_julgador"):
-        if len(grupo) < min_processos:
-            continue
-        linhas.append(
-            {
-                "orgao_julgador": orgao,
-                "processos_com_tempo": int(len(grupo)),
-                "mediana_dias": round(float(grupo["dias_ate_decisao_proxy"].median()), 1),
-                "p75_dias": round(float(grupo["dias_ate_decisao_proxy"].quantile(0.75)), 1),
-            }
+    resultado = (
+        base.groupby(group_column, as_index=False)
+        .agg(
+            processos_com_tempo=("dias_ate_decisao_proxy", "size"),
+            mediana_dias=("dias_ate_decisao_proxy", "median"),
+            p75_dias=("dias_ate_decisao_proxy", lambda serie: serie.quantile(0.75)),
         )
+    )
+    resultado = resultado.rename(columns={group_column: "orgao_julgador"})
+    resultado = resultado[resultado["processos_com_tempo"] >= int(min_processos)].copy()
+    if resultado.empty:
+        return pd.DataFrame(columns=columns)
 
-    if not linhas:
-        return pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
-
-    resultado = pd.DataFrame(linhas).sort_values(
-        ["mediana_dias", "processos_com_tempo"], ascending=[True, False]
+    resultado["mediana_dias"] = pd.to_numeric(resultado["mediana_dias"], errors="coerce").round(1)
+    resultado["p75_dias"] = pd.to_numeric(resultado["p75_dias"], errors="coerce").round(1)
+    resultado = resultado.sort_values(
+        ["mediana_dias", "processos_com_tempo"],
+        ascending=[True, False],
     )
     if max_items is not None:
         resultado = resultado.head(max_items)
-    return resultado.reset_index(drop=True)
+    return resultado.reset_index(drop=True)[columns]
+
+
+def decision_time_by_orgao_with_fallback(
+    df_anpp: pd.DataFrame,
+    preferred_min_processos: int = 3,
+    max_items: int | None = 12,
+    group_column: str = "orgao_julgador",
+) -> tuple[pd.DataFrame, int]:
+    thresholds = [preferred_min_processos, 2, 1]
+    thresholds = list(dict.fromkeys(int(valor) for valor in thresholds if int(valor) > 0))
+
+    for min_processos in thresholds:
+        resultado = decision_time_by_orgao_dataframe(
+            df_anpp,
+            min_processos=min_processos,
+            max_items=max_items,
+            group_column=group_column,
+        )
+        if not resultado.empty:
+            return resultado, min_processos
+
+    return decision_time_by_orgao_dataframe(
+        df_anpp,
+        min_processos=preferred_min_processos,
+        max_items=max_items,
+        group_column=group_column,
+    ), preferred_min_processos
 
 
 def decision_stability_by_orgao_dataframe(
     df_anpp: pd.DataFrame,
     min_classificados: int = 5,
     max_items: int | None = 12,
+    group_column: str = "orgao_julgador",
 ) -> pd.DataFrame:
-    base = decision_signal_base_dataframe(df_anpp)
+    columns = [
+        "orgao_julgador",
+        "decisoes_classificadas",
+        "desfecho_lider",
+        "forca_lider",
+        "indice_estabilidade",
+        "perfil_estabilidade",
+    ]
+    base = decision_signal_base_dataframe(df_anpp, group_column=group_column)
     if base.empty:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "decisoes_classificadas",
-                "desfecho_lider",
-                "forca_lider",
-                "indice_estabilidade",
-                "perfil_estabilidade",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
-    linhas: list[dict[str, Any]] = []
-    for orgao, grupo in base.groupby("orgao_julgador"):
-        if len(grupo) < min_classificados:
-            continue
-        contagem = grupo["decisao_categoria"].value_counts()
-        indice = stability_index_from_counts(contagem)
-        linhas.append(
-            {
-                "orgao_julgador": orgao,
-                "decisoes_classificadas": int(len(grupo)),
-                "desfecho_lider": str(contagem.index[0]),
-                "forca_lider": round(float(contagem.iloc[0] / contagem.sum() * 100), 1),
-                "indice_estabilidade": round(float(indice), 1) if indice is not None else pd.NA,
-                "perfil_estabilidade": stability_label_from_index(indice),
-            }
-        )
+    contagem = (
+        base.groupby(["orgao_julgador", "decisao_categoria"], as_index=False)
+        .size()
+        .rename(columns={"size": "quantidade"})
+    )
+    totais = contagem.groupby("orgao_julgador")["quantidade"].sum().rename("decisoes_classificadas")
+    contagem = contagem.merge(totais, on="orgao_julgador", how="left")
+    contagem = contagem[contagem["decisoes_classificadas"] >= int(min_classificados)].copy()
+    if contagem.empty:
+        return pd.DataFrame(columns=columns)
 
-    if not linhas:
-        return pd.DataFrame(
-            columns=[
-                "orgao_julgador",
-                "decisoes_classificadas",
-                "desfecho_lider",
-                "forca_lider",
-                "indice_estabilidade",
-                "perfil_estabilidade",
-            ]
-        )
+    contagem["share_quadrado"] = (
+        contagem["quantidade"] / contagem["decisoes_classificadas"]
+    ).pow(2)
+    indices = (
+        contagem.groupby("orgao_julgador", as_index=False)["share_quadrado"]
+        .sum()
+        .rename(columns={"share_quadrado": "indice_estabilidade"})
+    )
+    indices["indice_estabilidade"] = (indices["indice_estabilidade"] * 100).round(1)
 
-    resultado = pd.DataFrame(linhas).sort_values(
-        ["indice_estabilidade", "decisoes_classificadas"], ascending=[False, False]
+    lideres = (
+        contagem.sort_values(
+            ["orgao_julgador", "quantidade", "decisao_categoria"],
+            ascending=[True, False, True],
+        )
+        .drop_duplicates(subset=["orgao_julgador"])
+        .rename(columns={"decisao_categoria": "desfecho_lider", "quantidade": "quantidade_lider"})
+    )
+
+    resultado = (
+        contagem[["orgao_julgador", "decisoes_classificadas"]]
+        .drop_duplicates(subset=["orgao_julgador"])
+        .merge(lideres[["orgao_julgador", "desfecho_lider", "quantidade_lider"]], on="orgao_julgador", how="left")
+        .merge(indices, on="orgao_julgador", how="left")
+    )
+    resultado["forca_lider"] = (
+        resultado["quantidade_lider"] / resultado["decisoes_classificadas"] * 100
+    ).round(1)
+    resultado["perfil_estabilidade"] = resultado["indice_estabilidade"].map(
+        lambda valor: stability_label_from_index(float(valor)) if pd.notna(valor) else "Sem base"
+    )
+    resultado = resultado.sort_values(
+        ["indice_estabilidade", "decisoes_classificadas"],
+        ascending=[False, False],
     )
     if max_items is not None:
         resultado = resultado.head(max_items)
-    return resultado.reset_index(drop=True)
+    return resultado.reset_index(drop=True).drop(columns=["quantidade_lider"], errors="ignore")[columns]
 
 
 def decision_pattern_change_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
@@ -1538,6 +1827,7 @@ def theme_sample_alerts(
     favorabilidade_orgaos: pd.DataFrame,
     tempo_orgaos: pd.DataFrame,
     mudanca_padrao: dict[str, Any],
+    recorte_label_plural: str = "orgaos julgadores",
 ) -> list[str]:
     alertas: list[str] = []
     if total_tema < 30:
@@ -1554,11 +1844,11 @@ def theme_sample_alerts(
         )
     if not isinstance(favorabilidade_orgaos, pd.DataFrame) or len(favorabilidade_orgaos) < 3:
         alertas.append(
-            "Ainda nao ha orgaos suficientes com base util para um ranking robusto de favorabilidade."
+            f"Ainda nao ha {recorte_label_plural} suficientes com base util para um ranking robusto de favorabilidade."
         )
     if not isinstance(tempo_orgaos, pd.DataFrame) or tempo_orgaos.empty:
         alertas.append(
-            "Ainda nao ha massa critica para comparar tempo mediano de decisao por orgao neste tema."
+            f"Ainda nao ha massa critica para comparar tempo mediano de decisao por {recorte_label_plural} neste tema."
         )
     if int(mudanca_padrao.get("janela_meses", 0) or 0) == 0:
         alertas.append(
@@ -1571,8 +1861,9 @@ def decision_outcome_mix_by_orgao_dataframe(
     df_anpp: pd.DataFrame,
     max_orgaos: int = 8,
     max_desfechos: int = 5,
+    group_column: str = "orgao_julgador",
 ) -> pd.DataFrame:
-    base = decision_signal_base_dataframe(df_anpp)
+    base = decision_signal_base_dataframe(df_anpp, group_column=group_column)
     if base.empty:
         return pd.DataFrame(columns=["orgao_julgador", "total_classificados"])
 
@@ -1727,58 +2018,34 @@ def related_themes_dataframe(df_anpp: pd.DataFrame, tema: str, max_items: int = 
 
 
 def theme_overview_dataframe(df_anpp: pd.DataFrame, max_items: int = 15) -> pd.DataFrame:
+    columns = [
+        "tema",
+        "processos",
+        "com_desfecho",
+        "cobertura_desfecho",
+        "com_movimento_final",
+        "cobertura_movimento",
+    ]
     if df_anpp.empty or "assuntos" not in df_anpp.columns:
-        return pd.DataFrame(
-            columns=[
-                "tema",
-                "processos",
-                "com_desfecho",
-                "cobertura_desfecho",
-                "com_movimento_final",
-                "cobertura_movimento",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
-    linhas: list[dict[str, Any]] = []
-    for _, row in df_anpp.iterrows():
-        assuntos = row.get("assuntos", [])
-        if not isinstance(assuntos, list):
-            continue
-        temas = []
-        for assunto in assuntos:
-            tema = str(assunto or "").strip()
-            if tema:
-                temas.append(tema)
-        temas = list(dict.fromkeys(temas))
-        if not temas:
-            continue
-        tem_desfecho = bool(str(row.get("decisao_categoria", "") or "").strip())
-        tem_movimento = bool(str(row.get("decisao_movimento", "") or "").strip())
-        for tema in temas:
-            linhas.append(
-                {
-                    "tema": tema,
-                    "processos": 1,
-                    "com_desfecho": 1 if tem_desfecho else 0,
-                    "com_movimento_final": 1 if tem_movimento else 0,
-                }
-            )
+    base = df_anpp[["assuntos", "decisao_categoria", "decisao_movimento"]].copy()
+    base["tema"] = base["assuntos"].apply(unique_assuntos_list)
+    base = base.explode("tema")
+    base["tema"] = base["tema"].fillna("").astype(str).str.strip()
+    base = base[base["tema"] != ""]
+    if base.empty:
+        return pd.DataFrame(columns=columns)
 
-    if not linhas:
-        return pd.DataFrame(
-            columns=[
-                "tema",
-                "processos",
-                "com_desfecho",
-                "cobertura_desfecho",
-                "com_movimento_final",
-                "cobertura_movimento",
-            ]
-        )
-
+    base["processos"] = 1
+    base["com_desfecho"] = (
+        base["decisao_categoria"].fillna("").astype(str).str.strip().ne("").astype(int)
+    )
+    base["com_movimento_final"] = (
+        base["decisao_movimento"].fillna("").astype(str).str.strip().ne("").astype(int)
+    )
     overview = (
-        pd.DataFrame(linhas)
-        .groupby("tema", as_index=False)
+        base.groupby("tema", as_index=False)[["processos", "com_desfecho", "com_movimento_final"]]
         .sum()
         .sort_values(["processos", "com_desfecho"], ascending=[False, False])
         .head(max_items)
@@ -1793,16 +2060,7 @@ def theme_overview_dataframe(df_anpp: pd.DataFrame, max_items: int = 15) -> pd.D
         .round(1)
         .map(lambda valor: f"{valor:.1f}%")
     )
-    return overview[
-        [
-            "tema",
-            "processos",
-            "com_desfecho",
-            "cobertura_desfecho",
-            "com_movimento_final",
-            "cobertura_movimento",
-        ]
-    ]
+    return overview[columns]
 
 
 class DataJudRequestError(Exception):
@@ -2365,6 +2623,210 @@ def build_map_insights(
     return insights
 
 
+def build_query_derived_state(
+    df_anpp: pd.DataFrame,
+    df_mensal: pd.DataFrame,
+    top_100: pd.Series,
+    top_codigos: pd.DataFrame,
+    top_classes: pd.DataFrame,
+    top_assuntos: pd.DataFrame,
+    df_decisao: pd.DataFrame,
+    qtd_mapa: int,
+) -> dict[str, Any]:
+    top_100_df = top_100_to_dataframe(top_100)
+    top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
+    assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
+    sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
+    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
+
+    temas_decisao = pd.DataFrame(columns=["assunto", "quantidade"])
+    temas_overview = pd.DataFrame(
+        columns=[
+            "tema",
+            "processos",
+            "com_desfecho",
+            "cobertura_desfecho",
+            "com_movimento_final",
+            "cobertura_movimento",
+        ]
+    )
+    if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+        temas_decisao = assuntos_distintos_dataframe(df_decisao)
+        temas_overview = theme_overview_dataframe(df_decisao)
+
+    return {
+        "df_view": dataframe_for_display(df_anpp, max_rows=400),
+        "top_100_df": top_100_df,
+        "top_orgaos_df": top_orgaos_df,
+        "sample_insights": sample_insights,
+        "map_insights": map_insights,
+        "assuntos_distintos": assuntos_distintos,
+        "total_assuntos": int(len(assuntos_distintos)),
+        "temas_decisao": temas_decisao,
+        "temas_overview": temas_overview,
+    }
+
+
+def strategy_reload_target_size(query_size: Any, qtd_decisao_atual: Any = 0) -> int:
+    query_size_int = max(int(query_size or 0), 0)
+    qtd_decisao_int = max(int(qtd_decisao_atual or 0), 0)
+    target_size = max(
+        query_size_int,
+        qtd_decisao_int * 2,
+        STRATEGY_RELOAD_MIN_SIZE,
+    )
+    return min(target_size, STRATEGY_RELOAD_MAX_SIZE, MAX_PAGE_SIZE)
+
+
+def fetch_strategy_decision_dataframe(
+    api_key: str,
+    query_context: dict[str, Any],
+    target_size: int | None = None,
+) -> tuple[pd.DataFrame, int]:
+    classe_codigo = int(query_context.get("classe_codigo", 0) or 0)
+    url = str(query_context.get("url", "")).strip()
+    tribunal_sigla = str(query_context.get("tribunal_sigla", "")).strip()
+    estrutura_filtro = str(query_context.get("estrutura_filtro", "Todos"))
+    query_size = int(query_context.get("query_size", 0) or 0)
+    qtd_decisao_atual = int(query_context.get("qtd_decisao", 0) or 0)
+    decision_size = int(target_size or strategy_reload_target_size(query_size, qtd_decisao_atual))
+
+    if not api_key or not classe_codigo or not url or not tribunal_sigla:
+        raise ValueError("Nao encontrei os parametros da ultima consulta para ampliar a leitura estrategica.")
+
+    hits_decisao = fetch_hits(
+        api_key=api_key,
+        classe_codigo=classe_codigo,
+        size=decision_size,
+        url=url,
+        numero_processo="",
+        data_inicio=query_context.get("data_inicio_consulta"),
+        data_fim=query_context.get("data_fim_consulta"),
+        incluir_movimentos=True,
+        modo_consulta="classe_ou_processo",
+    )
+    df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
+    if df_decisao.empty:
+        return df_decisao, decision_size
+
+    df_decisao = enrich_decision_proxy_dataframe(df_decisao)
+    df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
+    df_decisao = add_comparison_columns(df_decisao)
+    return df_decisao, decision_size
+
+
+def replace_decision_state_in_session(
+    df_decisao: pd.DataFrame,
+    target_size: int,
+    aviso: str | None = None,
+) -> None:
+    qtd_decisao = int(len(df_decisao))
+    st.session_state["df_decisao"] = df_decisao
+    st.session_state["qtd_decisao"] = qtd_decisao
+
+    query_context = dict(st.session_state.get("last_query_context", {}))
+    query_context["qtd_decisao"] = qtd_decisao
+    query_context["strategy_target_size"] = int(target_size)
+    st.session_state["last_query_context"] = query_context
+
+    if aviso:
+        avisos_consulta = list(st.session_state.get("avisos_consulta", []))
+        if aviso not in avisos_consulta:
+            avisos_consulta.append(aviso)
+        st.session_state["avisos_consulta"] = avisos_consulta[-6:]
+
+    st.session_state["derived_state"] = build_query_derived_state(
+        df_anpp=st.session_state.get("df_anpp", pd.DataFrame()),
+        df_mensal=st.session_state.get("df_mensal", pd.DataFrame()),
+        top_100=st.session_state.get("top_100", pd.Series(dtype="int64")),
+        top_codigos=st.session_state.get("top_codigos", pd.DataFrame()),
+        top_classes=st.session_state.get("top_classes", pd.DataFrame()),
+        top_assuntos=st.session_state.get("top_assuntos", pd.DataFrame()),
+        df_decisao=df_decisao,
+        qtd_mapa=int(st.session_state.get("qtd_mapa", 0) or 0),
+    )
+
+
+def build_comparison_dimension_state(df_tema_decisao: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    comparison_state: dict[str, dict[str, Any]] = {}
+    for key, config in COMPARISON_DIMENSIONS.items():
+        group_column = str(config["column"])
+        orgaos_tema = decision_by_orgao_dataframe(
+            df_tema_decisao,
+            group_column=group_column,
+        )
+        mix_orgaos_tema = decision_outcome_mix_by_orgao_dataframe(
+            df_tema_decisao,
+            group_column=group_column,
+        )
+        favorabilidade_orgaos, favorabilidade_minima = decision_favorability_by_orgao_with_fallback(
+            df_tema_decisao,
+            preferred_min_decisoes_uteis=5,
+            max_items=None,
+            group_column=group_column,
+        )
+        tempo_orgaos, tempo_minimo = decision_time_by_orgao_with_fallback(
+            df_tema_decisao,
+            preferred_min_processos=3,
+            max_items=None,
+            group_column=group_column,
+        )
+        estabilidade_orgaos = decision_stability_by_orgao_dataframe(
+            df_tema_decisao,
+            min_classificados=5,
+            max_items=None,
+            group_column=group_column,
+        )
+        score = (
+            len(favorabilidade_orgaos) * 1000
+            + int(favorabilidade_orgaos["decisoes_uteis"].sum()) * 10
+            + len(tempo_orgaos) * 250
+            + len(estabilidade_orgaos) * 100
+            + len(orgaos_tema) * 10
+        )
+        comparison_state[key] = {
+            "orgaos_tema": orgaos_tema,
+            "mix_orgaos_tema": mix_orgaos_tema,
+            "favorabilidade_orgaos": favorabilidade_orgaos,
+            "favorabilidade_minima": favorabilidade_minima,
+            "tempo_orgaos": tempo_orgaos,
+            "tempo_minimo": tempo_minimo,
+            "estabilidade_orgaos": estabilidade_orgaos,
+            "grupos_favorabilidade": int(len(favorabilidade_orgaos)),
+            "grupos_tempo": int(len(tempo_orgaos)),
+            "decisoes_uteis": int(favorabilidade_orgaos["decisoes_uteis"].sum())
+            if not favorabilidade_orgaos.empty
+            else 0,
+            "score": int(score),
+        }
+    return comparison_state
+
+
+def recommended_comparison_dimension(
+    comparison_state: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    default_key = "orgao"
+    if not comparison_state:
+        return default_key, {"score": 0, "grupos_favorabilidade": 0, "grupos_tempo": 0, "decisoes_uteis": 0}
+
+    order = list(COMPARISON_DIMENSIONS.keys())
+    best_key = default_key
+    best_rank = (-1, -1, -1, -1)
+    for key in order:
+        state = comparison_state.get(key, {})
+        rank = (
+            int(state.get("score", 0) or 0),
+            int(state.get("grupos_favorabilidade", 0) or 0),
+            int(state.get("grupos_tempo", 0) or 0),
+            int(state.get("decisoes_uteis", 0) or 0),
+        )
+        if rank > best_rank:
+            best_key = key
+            best_rank = rank
+
+    return best_key, comparison_state.get(best_key, {})
+
+
 def build_decision_theme_insights(
     tema: str,
     total_tema: int,
@@ -2772,11 +3234,15 @@ def fig_desfechos_tema(desfechos_tema: pd.DataFrame) -> Any:
     return fig
 
 
-def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
+def fig_desfechos_por_orgao(
+    df_mix: pd.DataFrame,
+    titulo: str = "Desfecho por orgao julgador",
+    eixo_label: str = "Orgao julgador",
+) -> Any:
     plt = get_plt()
     if df_mix.empty or "orgao_julgador" not in df_mix.columns:
         fig, ax = plt.subplots(figsize=(9, 4))
-        ax.set_title("Desfecho por orgao julgador")
+        ax.set_title(titulo)
         ax.text(0.5, 0.5, "Sem dados suficientes para cruzar orgao e desfecho.", ha="center", va="center")
         ax.axis("off")
         return fig
@@ -2787,7 +3253,7 @@ def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
     ]
     if not colunas_desfecho:
         fig, ax = plt.subplots(figsize=(9, 4))
-        ax.set_title("Desfecho por orgao julgador")
+        ax.set_title(titulo)
         ax.text(0.5, 0.5, "Sem desfechos classificados para montar o comparativo.", ha="center", va="center")
         ax.axis("off")
         return fig
@@ -2795,7 +3261,7 @@ def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
     base = base[base["total_classificados"] > 0].copy()
     if base.empty:
         fig, ax = plt.subplots(figsize=(9, 4))
-        ax.set_title("Desfecho por orgao julgador")
+        ax.set_title(titulo)
         ax.text(0.5, 0.5, "Sem volume classificado suficiente para o comparativo.", ha="center", va="center")
         ax.axis("off")
         return fig
@@ -2824,18 +3290,23 @@ def fig_desfechos_por_orgao(df_mix: pd.DataFrame) -> Any:
     ax.invert_yaxis()
     ax.set_xlim(0, 100)
     ax.set_xlabel("% dos desfechos classificados")
-    ax.set_title("Desfecho por orgao julgador")
+    ax.set_ylabel(eixo_label)
+    ax.set_title(titulo)
     ax.grid(axis="x", linestyle="--", alpha=0.25)
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.35), ncol=2, frameon=False)
     fig.tight_layout()
     return fig
 
 
-def fig_favorabilidade_por_orgao(df_favorabilidade: pd.DataFrame) -> Any:
+def fig_favorabilidade_por_orgao(
+    df_favorabilidade: pd.DataFrame,
+    titulo: str = "Indice de favorabilidade por orgao",
+    eixo_label: str = "Orgao julgador",
+) -> Any:
     plt = get_plt()
     if df_favorabilidade.empty or "orgao_julgador" not in df_favorabilidade.columns:
         fig, ax = plt.subplots(figsize=(9, 4))
-        ax.set_title("Indice de favorabilidade por orgao")
+        ax.set_title(titulo)
         ax.text(0.5, 0.5, "Sem base suficiente para medir favorabilidade por orgao.", ha="center", va="center")
         ax.axis("off")
         return fig
@@ -2852,8 +3323,8 @@ def fig_favorabilidade_por_orgao(df_favorabilidade: pd.DataFrame) -> Any:
     ax.barh(labels, valores, color=cores, alpha=0.92)
     ax.axvline(0, color="#BBBBBB", linewidth=1)
     ax.set_xlabel("Indice de favorabilidade estimada")
-    ax.set_ylabel("Orgao julgador")
-    ax.set_title("Indice de favorabilidade por orgao")
+    ax.set_ylabel(eixo_label)
+    ax.set_title(titulo)
     ax.grid(axis="x", linestyle="--", alpha=0.25)
 
     for i, valor in enumerate(valores):
@@ -2865,33 +3336,43 @@ def fig_favorabilidade_por_orgao(df_favorabilidade: pd.DataFrame) -> Any:
     return fig
 
 
-def fig_tempo_por_orgao(df_tempo: pd.DataFrame) -> Any:
+def fig_tempo_por_orgao(
+    df_tempo: pd.DataFrame,
+    titulo: str = "Tempo mediano por orgao",
+    eixo_label: str = "Orgao julgador",
+) -> Any:
     plt = get_plt()
     if df_tempo.empty or "orgao_julgador" not in df_tempo.columns:
         fig, ax = plt.subplots(figsize=(9, 4))
-        ax.set_title("Tempo mediano por orgao")
+        ax.set_title(titulo)
         ax.text(0.5, 0.5, "Sem base suficiente para comparar tempo por orgao.", ha="center", va="center")
         ax.axis("off")
         return fig
 
-    base = df_tempo.copy().sort_values("mediana_dias", ascending=False)
+    base = df_tempo.copy().sort_values("mediana_dias", ascending=True)
     labels = [
-        orgao if len(orgao) <= 30 else orgao[:30] + "..."
+        orgao if len(orgao) <= 36 else orgao[:36] + "..."
         for orgao in base["orgao_julgador"].astype(str)
     ]
     valores = pd.to_numeric(base["mediana_dias"], errors="coerce").fillna(0.0)
+    max_valor = float(valores.max()) if not valores.empty else 0.0
+    margem_esquerda = min(0.42, 0.18 + (max((len(label) for label in labels), default=20) * 0.0055))
 
-    fig, ax = plt.subplots(figsize=(10, max(4.2, len(base) * 0.55 + 1.5)))
+    fig, ax = plt.subplots(figsize=(12, max(4.8, len(base) * 0.72 + 1.8)))
     ax.barh(labels, valores, color="#4E79A7", alpha=0.92)
+    ax.invert_yaxis()
     ax.set_xlabel("Mediana de dias ate o desfecho")
-    ax.set_ylabel("Orgao julgador")
-    ax.set_title("Tempo mediano por orgao")
+    ax.set_ylabel(eixo_label)
+    ax.set_title(titulo)
     ax.grid(axis="x", linestyle="--", alpha=0.25)
+    ax.set_xlim(0, max(max_valor * 1.18, 1.0))
+    ax.tick_params(axis="y", labelsize=9)
+    ax.margins(y=0.03)
 
     for i, valor in enumerate(valores):
-        ax.text(valor + max(float(valores.max()) * 0.01, 0.6), i, f"{valor:.1f}", va="center", fontsize=9)
+        ax.text(valor + max(max_valor * 0.015, 0.8), i, f"{valor:.1f}", va="center", fontsize=9)
 
-    fig.tight_layout()
+    fig.subplots_adjust(left=margem_esquerda, right=0.97, top=0.90, bottom=0.12)
     return fig
 
 
@@ -3077,7 +3558,7 @@ def render() -> None:
             if periodo_legivel:
                 st.caption(f"Periodo aplicado: {periodo_legivel}")
         st.caption(
-            "Ao executar a consulta, o app tambem monta automaticamente um mapa da sigla com os codigos, classes e assuntos mais comuns."
+            "No modo rapido, o app prioriza a resposta principal. Em buscas pequenas, ele pode reduzir ou pular leituras complementares para responder mais rapido."
         )
         modo_rapido = st.checkbox(
             "Modo rapido (recomendado)",
@@ -3143,8 +3624,9 @@ def render() -> None:
                 else:
                     df_anpp = add_estrutura_column(df_anpp, tribunal_sigla)
                 top_100 = build_top_100(df_anpp)
-                mapa_size = min(max(int(size), 2000), MAX_PAGE_SIZE)
-                decisao_size = min(max(int(size), 400), 1200)
+                size_int = int(size)
+                mapa_size = 0
+                decisao_size = 0
                 top_codigos = pd.DataFrame()
                 top_classes = pd.DataFrame()
                 top_assuntos = pd.DataFrame()
@@ -3154,56 +3636,72 @@ def render() -> None:
 
                 if not usar_numero_processo:
                     if modo_rapido:
-                        try:
-                            hits_decisao = fetch_hits(
-                                api_key=api_key,
-                                classe_codigo=int(classe_codigo),
-                                size=decisao_size,
-                                url=url,
-                                numero_processo="",
-                                data_inicio=data_inicio_consulta,
-                                data_fim=data_fim_consulta,
-                                incluir_movimentos=True,
-                                modo_consulta="classe_ou_processo",
-                            )
-                            df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
-                        except DataJudRequestError as exc:
+                        if size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
+                            decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
+                            mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
+                        else:
                             avisos_consulta.append(
-                                "Nao consegui montar a leitura decisoria complementar nesta tentativa. "
-                                f"{exc}"
+                                "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
                             )
-                            df_decisao = pd.DataFrame()
                     else:
-                        df_decisao = df_anpp.head(decisao_size).copy()
+                        mapa_size = min(max(size_int, 2000), MAX_PAGE_SIZE)
+                        decisao_size = min(max(size_int, 400), 1200)
+
+                    if modo_rapido:
+                        if decisao_size > 0:
+                            try:
+                                hits_decisao = fetch_hits(
+                                    api_key=api_key,
+                                    classe_codigo=int(classe_codigo),
+                                    size=decisao_size,
+                                    url=url,
+                                    numero_processo="",
+                                    data_inicio=data_inicio_consulta,
+                                    data_fim=data_fim_consulta,
+                                    incluir_movimentos=True,
+                                    modo_consulta="classe_ou_processo",
+                                )
+                                df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
+                            except DataJudRequestError as exc:
+                                avisos_consulta.append(
+                                    "Nao consegui montar a leitura decisoria complementar nesta tentativa. "
+                                    f"{exc}"
+                                )
+                                df_decisao = pd.DataFrame()
+                    else:
+                        if decisao_size > 0:
+                            df_decisao = df_anpp.head(decisao_size).copy()
 
                     if not df_decisao.empty:
                         df_decisao = enrich_decision_proxy_dataframe(df_decisao)
                         df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
+                        df_decisao = add_comparison_columns(df_decisao)
                         qtd_decisao = len(df_decisao)
 
-                    try:
-                        hits_mapa = fetch_hits(
-                            api_key=api_key,
-                            classe_codigo=int(classe_codigo),
-                            size=mapa_size,
-                            url=url,
-                            numero_processo="",
-                            data_inicio=data_inicio_consulta,
-                            data_fim=data_fim_consulta,
-                            incluir_movimentos=False,
-                            modo_consulta="mapa_tribunal",
-                        )
-                        df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
-                        df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
-                        top_codigos = top_codigos_dataframe(df_mapa)
-                        top_classes = top_classes_dataframe(df_mapa)
-                        top_assuntos = top_assuntos_dataframe(df_mapa)
-                        qtd_mapa = len(df_mapa)
-                    except DataJudRequestError as exc:
-                        avisos_consulta.append(
-                            "Nao consegui montar o mapa automatico da sigla nesta tentativa. "
-                            f"{exc}"
-                        )
+                    if mapa_size > 0:
+                        try:
+                            hits_mapa = fetch_hits(
+                                api_key=api_key,
+                                classe_codigo=int(classe_codigo),
+                                size=mapa_size,
+                                url=url,
+                                numero_processo="",
+                                data_inicio=data_inicio_consulta,
+                                data_fim=data_fim_consulta,
+                                incluir_movimentos=False,
+                                modo_consulta="mapa_tribunal",
+                            )
+                            df_mapa = hits_to_dataframe(hits_mapa, processar_movimentos=False)
+                            df_mapa = filter_dataframe_by_estrutura(df_mapa, tribunal_sigla, estrutura_filtro)
+                            top_codigos = top_codigos_dataframe(df_mapa)
+                            top_classes = top_classes_dataframe(df_mapa)
+                            top_assuntos = top_assuntos_dataframe(df_mapa)
+                            qtd_mapa = len(df_mapa)
+                        except DataJudRequestError as exc:
+                            avisos_consulta.append(
+                                "Nao consegui montar o mapa automatico da sigla nesta tentativa. "
+                                f"{exc}"
+                            )
 
                 # Se a amostra vier curta para histórico mensal, tenta ampliar só para o gráfico.
                 df_mensal = df_anpp
@@ -3275,6 +3773,27 @@ def render() -> None:
         st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
         st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
         st.session_state["avisos_consulta"] = avisos_consulta
+        st.session_state["last_query_context"] = {
+            "classe_codigo": int(classe_codigo),
+            "url": url,
+            "tribunal_sigla": tribunal_sigla,
+            "estrutura_filtro": estrutura_filtro,
+            "data_inicio_consulta": data_inicio_consulta,
+            "data_fim_consulta": data_fim_consulta,
+            "query_size": int(size),
+            "qtd_decisao": qtd_decisao,
+            "usar_numero_processo": bool(usar_numero_processo),
+        }
+        st.session_state["derived_state"] = build_query_derived_state(
+            df_anpp=df_anpp,
+            df_mensal=df_mensal,
+            top_100=top_100,
+            top_codigos=top_codigos,
+            top_classes=top_classes,
+            top_assuntos=top_assuntos,
+            df_decisao=df_decisao,
+            qtd_mapa=qtd_mapa,
+        )
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
@@ -3288,6 +3807,9 @@ def render() -> None:
     top_classes = st.session_state.get("top_classes", pd.DataFrame())
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
     df_decisao = st.session_state.get("df_decisao", pd.DataFrame())
+    if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty and "comparativo_orgao" not in df_decisao.columns:
+        df_decisao = add_comparison_columns(df_decisao)
+        st.session_state["df_decisao"] = df_decisao
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
@@ -3295,19 +3817,29 @@ def render() -> None:
     periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
     periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
     avisos_consulta = st.session_state.get("avisos_consulta", [])
-    df_view = dataframe_for_display(df_anpp, max_rows=400)
-    top_100_df = top_100_to_dataframe(top_100)
-    top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
-    sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
-    map_insights = build_map_insights(top_codigos, top_classes, top_assuntos, qtd_mapa)
+    last_query_context = st.session_state.get("last_query_context", {})
+    derived_state = st.session_state.get("derived_state")
+    if not isinstance(derived_state, dict):
+        derived_state = build_query_derived_state(
+            df_anpp=df_anpp,
+            df_mensal=df_mensal,
+            top_100=top_100,
+            top_codigos=top_codigos,
+            top_classes=top_classes,
+            top_assuntos=top_assuntos,
+            df_decisao=df_decisao,
+            qtd_mapa=qtd_mapa,
+        )
+        st.session_state["derived_state"] = derived_state
+    df_view = derived_state["df_view"]
+    top_100_df = derived_state["top_100_df"]
+    top_orgaos_df = derived_state["top_orgaos_df"]
+    sample_insights = derived_state["sample_insights"]
+    map_insights = derived_state["map_insights"]
     tema_insights: list[str] = []
     tema_escolhido = ""
-    assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
-    total_assuntos = (
-        df_anpp["assuntos"].explode().dropna().astype(str).nunique()
-        if "assuntos" in df_anpp.columns
-        else 0
-    )
+    assuntos_distintos = derived_state["assuntos_distintos"]
+    total_assuntos = int(derived_state.get("total_assuntos", 0) or 0)
 
     st.subheader("Resumo")
     c1, c2, c3 = st.columns(3)
@@ -3339,9 +3871,61 @@ def render() -> None:
             "A leitura decisoria por tema aparece nas consultas por classe/tema. "
             "Quando voce busca por numero do processo, o app mostra o caso individual e nao aplica o filtro estrutural para nao esconder o processo."
         )
+    elif not isinstance(df_decisao, pd.DataFrame) or df_decisao.empty:
+        st.info(
+            "A consulta principal foi concluida, mas a leitura decisoria complementar ainda nao esta carregada nesta amostra."
+        )
+        pode_ampliar_leitura = (
+            isinstance(last_query_context, dict)
+            and bool(last_query_context.get("classe_codigo"))
+            and bool(last_query_context.get("url"))
+            and bool(last_query_context.get("tribunal_sigla"))
+            and not bool(last_query_context.get("usar_numero_processo", False))
+        )
+        target_size = strategy_reload_target_size(
+            last_query_context.get("query_size", 0),
+            last_query_context.get("qtd_decisao", qtd_decisao),
+        )
+        st.caption(
+            "Sem essa camada complementar, a parte de temas, favorabilidade e tempo pode ficar vazia no modo rapido."
+        )
+        if pode_ampliar_leitura:
+            if st.button(
+                f"Carregar leitura decisoria complementar (ate {format_int_br(target_size)} registros)",
+                key="carregar_leitura_decisoria_complementar",
+            ):
+                with st.spinner("Carregando leitura decisoria complementar..."):
+                    try:
+                        df_decisao_carregado, decision_size = fetch_strategy_decision_dataframe(
+                            api_key=api_key,
+                            query_context=last_query_context,
+                            target_size=target_size,
+                        )
+                    except DataJudRequestError as exc:
+                        st.error(
+                            "Nao consegui carregar a leitura decisoria complementar nesta tentativa. "
+                            f"{exc}"
+                        )
+                    except Exception as exc:
+                        st.error(str(exc))
+                    else:
+                        if df_decisao_carregado.empty:
+                            st.warning(
+                                "A leitura decisoria complementar foi consultada, mas voltou sem base aproveitavel para este filtro estrutural."
+                            )
+                        else:
+                            replace_decision_state_in_session(
+                                df_decisao_carregado,
+                                target_size=decision_size,
+                                aviso=(
+                                    "Leitura decisoria complementar carregada sob demanda para liberar os comparativos "
+                                    f"de tema com ate {format_int_br(decision_size)} registros."
+                                ),
+                            )
+                            st.rerun()
     elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
-        temas_decisao = assuntos_distintos_dataframe(df_decisao)
-        temas_overview = theme_overview_dataframe(df_decisao)
+        temas_decisao = derived_state["temas_decisao"]
+        temas_overview = derived_state["temas_overview"]
         st.subheader("Leitura decisoria por tema")
         st.caption(
             "Esta leitura usa o ultimo movimento decisorio identificado em cada processo como proxy do desfecho. "
@@ -3378,8 +3962,7 @@ def render() -> None:
             df_tema_decisao = filter_dataframe_by_tema(df_decisao, tema_escolhido)
             desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
             movimentos_tema = decision_movements_dataframe(df_tema_decisao)
-            orgaos_tema = decision_by_orgao_dataframe(df_tema_decisao)
-            mix_orgaos_tema = decision_outcome_mix_by_orgao_dataframe(df_tema_decisao)
+            orgaos_tema_base = decision_by_orgao_dataframe(df_tema_decisao)
             classes_tema = top_classes_dataframe(df_tema_decisao)
             temas_relacionados = related_themes_dataframe(df_tema_decisao, tema_escolhido)
             cobertura_tema = decision_coverage_summary(df_tema_decisao)
@@ -3391,21 +3974,51 @@ def render() -> None:
             tendencia_tema = theme_recent_trend_summary(df_tema_decisao)
             favorabilidade_tema = decision_favorability_summary(df_tema_decisao)
             estabilidade_tema = decision_stability_summary(df_tema_decisao)
-            favorabilidade_orgaos = decision_favorability_by_orgao_dataframe(
-                df_tema_decisao,
-                min_decisoes_uteis=5,
-                max_items=None,
+            comparison_state_by_dimension = build_comparison_dimension_state(df_tema_decisao)
+            dimensao_recomendada, dimensao_recomendada_state = recommended_comparison_dimension(
+                comparison_state_by_dimension
             )
-            tempo_orgaos = decision_time_by_orgao_dataframe(
-                df_tema_decisao,
-                min_processos=3,
-                max_items=None,
+            if int(dimensao_recomendada_state.get("score", 0) or 0) > 0:
+                st.caption(
+                    f"Recorte recomendado agora: {COMPARISON_DIMENSIONS[dimensao_recomendada]['label']} "
+                    f"com {format_int_br(dimensao_recomendada_state.get('decisoes_uteis', 0))} decisoes uteis e "
+                    f"{format_int_br(dimensao_recomendada_state.get('grupos_favorabilidade', 0))} itens com sinal comparavel."
+                )
+            else:
+                st.caption(
+                    "O app tenta sugerir o recorte com mais massa critica. Se todos vierem fracos, use a ampliacao da leitura estrategica."
+                )
+            dimensao_comparativa = st.radio(
+                "Recorte comparativo da estrategia",
+                options=list(COMPARISON_DIMENSIONS.keys()),
+                format_func=lambda key: COMPARISON_DIMENSIONS[key]["label"],
+                index=list(COMPARISON_DIMENSIONS.keys()).index(dimensao_recomendada),
+                horizontal=True,
+                key=f"comparacao_tema_{tema_escolhido}",
             )
-            estabilidade_orgaos = decision_stability_by_orgao_dataframe(
-                df_tema_decisao,
-                min_classificados=5,
-                max_items=None,
+            dimensao_config = COMPARISON_DIMENSIONS[dimensao_comparativa]
+            rotulo_comparativo = str(dimensao_config["label"])
+            eixo_comparativo = str(dimensao_config["axis_label"])
+            coluna_tabela_comparativa = str(dimensao_config["table_label"])
+            plural_comparativo = str(dimensao_config["plural_label"])
+            comparison_state = comparison_state_by_dimension.get(dimensao_comparativa, {})
+            orgaos_tema = comparison_state.get("orgaos_tema", pd.DataFrame())
+            mix_orgaos_tema = comparison_state.get("mix_orgaos_tema", pd.DataFrame())
+            favorabilidade_orgaos = comparison_state.get("favorabilidade_orgaos", pd.DataFrame())
+            favorabilidade_minima_utilizada = int(
+                comparison_state.get("favorabilidade_minima", 5) or 5
             )
+            tempo_orgaos = comparison_state.get("tempo_orgaos", pd.DataFrame())
+            tempo_minimo_utilizado = int(comparison_state.get("tempo_minimo", 3) or 3)
+            estabilidade_orgaos = comparison_state.get("estabilidade_orgaos", pd.DataFrame())
+            if (
+                dimensao_comparativa != dimensao_recomendada
+                and int(dimensao_recomendada_state.get("score", 0) or 0)
+                > int(comparison_state.get("score", 0) or 0)
+            ):
+                st.info(
+                    f"Para este tema, {COMPARISON_DIMENSIONS[dimensao_recomendada]['label'].lower()} tende a mostrar mais sinal util do que {rotulo_comparativo.lower()}."
+                )
             mudanca_padrao = decision_pattern_change_summary(df_tema_decisao)
             total_tema = int(cobertura_tema["total_processos"])
             total_com_desfecho = int(cobertura_tema["com_desfecho"])
@@ -3417,6 +4030,7 @@ def render() -> None:
                 favorabilidade_orgaos,
                 tempo_orgaos,
                 mudanca_padrao,
+                recorte_label_plural=plural_comparativo,
             )
             cobertura = float(cobertura_tema["cobertura_desfecho"])
             cobertura_movimento = float(cobertura_tema["cobertura_movimento"])
@@ -3486,6 +4100,27 @@ def render() -> None:
                 if not favorabilidade_orgaos.empty
                 else pd.DataFrame()
             )
+            mix_orgaos_tema_view = mix_orgaos_tema.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            orgaos_tema_view = orgaos_tema.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            favorabilidade_orgaos_view = favorabilidade_orgaos.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            ranking_favoraveis_view = ranking_favoraveis.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            ranking_restritivos_view = ranking_restritivos.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            tempo_orgaos_view = tempo_orgaos.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            estabilidade_orgaos_view = estabilidade_orgaos.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
 
             d1, d2, d3, d4 = st.columns(4)
             render_theme_metric_card(d1, "Processos do tema", f"{total_tema:,}".replace(",", "."))
@@ -3508,7 +4143,7 @@ def render() -> None:
                 total_com_desfecho,
                 desfechos_tema,
                 movimentos_tema,
-                orgaos_tema,
+                orgaos_tema_base,
                 forca_tema,
                 concentracao_tema,
                 tendencia_tema,
@@ -3517,7 +4152,7 @@ def render() -> None:
                 mudanca_padrao,
                 alertas_tema,
             )
-            tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Orgaos", "Estrategia", "Contexto do tema"])
+            tema_tabs = st.tabs(["Resumo do tema", "Leituras", "Recortes", "Estrategia", "Contexto do tema"])
             with tema_tabs[0]:
                 st.caption(
                     "Aqui o app resume o tema escolhido com base nos processos da amostra e nos movimentos mais recentes encontrados."
@@ -3617,49 +4252,128 @@ def render() -> None:
                     else:
                         st.info("Nao encontrei movimentos finais suficientes para este tema.")
             with tema_tabs[2]:
-                st.markdown("**Como os orgaos julgadores aparecem neste tema**")
-                st.caption("Compara volume, cobertura e sinal principal por orgao julgador neste tema.")
+                st.markdown(f"**Como {rotulo_comparativo.lower()} aparece neste tema**")
+                st.caption(
+                    f"Recorte ativo: {rotulo_comparativo}. O comparativo abaixo resume volume, cobertura e sinal principal neste nivel."
+                )
                 if not mix_orgaos_tema.empty:
-                    st.markdown("**Desfecho por orgao julgador**")
-                    st.caption("Compara a composicao dos desfechos classificados entre os principais orgaos do tema.")
+                    st.markdown(f"**Desfecho por {eixo_comparativo.lower()}**")
+                    st.caption(
+                        f"Compara a composicao dos desfechos classificados entre os principais itens de {rotulo_comparativo.lower()}."
+                    )
                     col_mix_chart, col_mix_table = st.columns(2)
                     with col_mix_chart:
-                        st.pyplot(fig_desfechos_por_orgao(mix_orgaos_tema), clear_figure=True)
+                        st.pyplot(
+                            fig_desfechos_por_orgao(
+                                mix_orgaos_tema,
+                                titulo=f"Desfecho por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
+                        )
                     with col_mix_table:
-                        st.dataframe(mix_orgaos_tema, use_container_width=True, height=360)
+                        st.dataframe(mix_orgaos_tema_view, use_container_width=True, height=360)
                 else:
                     st.info(
-                        "Ainda nao ha desfechos classificados suficientes para comparar os orgaos julgadores neste tema."
+                        f"Ainda nao ha desfechos classificados suficientes para comparar {rotulo_comparativo.lower()} neste tema."
                     )
-                st.markdown("**Resumo por orgao julgador**")
+                st.markdown(f"**Resumo por {eixo_comparativo.lower()}**")
                 if not orgaos_tema.empty:
-                    st.dataframe(orgaos_tema, use_container_width=True, height=320)
+                    st.dataframe(orgaos_tema_view, use_container_width=True, height=320)
                 else:
-                    st.info("Nao encontrei dados suficientes por orgao julgador para este tema.")
-                st.markdown("**Taxa de desfecho por orgao**")
+                    st.info(f"Nao encontrei dados suficientes por {rotulo_comparativo.lower()} neste tema.")
+                st.markdown(f"**Taxa de desfecho por {eixo_comparativo.lower()}**")
                 st.caption(
-                    "Mostra, por orgao, a proporcao estimada de sinais favoraveis, desfavoraveis e mistos entre as decisoes uteis do tema."
+                    f"Mostra, por {eixo_comparativo.lower()}, a proporcao estimada de sinais favoraveis, desfavoraveis e mistos entre as decisoes uteis do tema."
                 )
+                if not favorabilidade_orgaos.empty and favorabilidade_minima_utilizada < 5:
+                    st.caption(
+                        f"Leitura expandida: para nao esconder o comparativo, o app aceitou {rotulo_comparativo.lower()} com pelo menos {favorabilidade_minima_utilizada} decisoes uteis. Use como sinal exploratorio."
+                    )
                 if not favorabilidade_orgaos.empty:
                     st.dataframe(
-                        favorabilidade_orgaos.head(12),
+                        favorabilidade_orgaos_view.head(12),
                         use_container_width=True,
                         height=320,
                     )
                 else:
                     st.info(
-                        "Ainda nao ha base util suficiente para medir favorabilidade estimada por orgao neste tema."
+                        f"Ainda nao ha base util suficiente para medir favorabilidade estimada por {rotulo_comparativo.lower()} neste tema."
                     )
             with tema_tabs[3]:
                 st.caption(
                     "Estas metricas ajudam na estrategia, mas funcionam como proxy automatica. Use junto da leitura juridica do tema e do orgao."
                 )
+                estrategia_fraca = (
+                    favorabilidade_orgaos.empty
+                    or tempo_orgaos.empty
+                    or int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) < 10
+                )
+                strategy_target_size = strategy_reload_target_size(
+                    last_query_context.get("query_size", 0),
+                    last_query_context.get("qtd_decisao", qtd_decisao),
+                )
+                pode_reforcar_estrategia = (
+                    isinstance(last_query_context, dict)
+                    and bool(last_query_context.get("classe_codigo"))
+                    and bool(last_query_context.get("url"))
+                    and bool(last_query_context.get("tribunal_sigla"))
+                    and not bool(last_query_context.get("usar_numero_processo", False))
+                    and strategy_target_size > max(qtd_decisao, 0)
+                )
+                if estrategia_fraca and pode_reforcar_estrategia:
+                    st.warning(
+                        "A base estrategica deste tema ainda veio curta. Se voce quiser, o app pode buscar mais movimentos para tentar destravar os rankings e o comparativo de tempo."
+                    )
+                    if st.button(
+                        f"Reforcar base estrategica (ate {format_int_br(strategy_target_size)} registros com movimentos)",
+                        key=f"reforcar_estrategia_{tema_escolhido}",
+                    ):
+                        with st.spinner("Ampliando base estrategica deste tema..."):
+                            try:
+                                df_decisao_reforcado, decision_size = fetch_strategy_decision_dataframe(
+                                    api_key=api_key,
+                                    query_context=last_query_context,
+                                    target_size=strategy_target_size,
+                                )
+                            except DataJudRequestError as exc:
+                                st.error(
+                                    "Nao consegui ampliar a base estrategica nesta tentativa. "
+                                    f"{exc}"
+                                )
+                            except Exception as exc:
+                                st.error(str(exc))
+                            else:
+                                if df_decisao_reforcado.empty:
+                                    st.warning(
+                                        "A ampliacao foi executada, mas ainda nao voltou base estrategica suficiente para este filtro."
+                                    )
+                                else:
+                                    replace_decision_state_in_session(
+                                        df_decisao_reforcado,
+                                        target_size=decision_size,
+                                        aviso=(
+                                            "Base estrategica ampliada sob demanda para melhorar comparativos de favorabilidade "
+                                            f"e tempo com ate {format_int_br(decision_size)} registros."
+                                        ),
+                                    )
+                                    st.rerun()
                 col_estrat1, col_estrat2 = st.columns([1.15, 0.85])
                 with col_estrat1:
-                    st.markdown("**Indice de favorabilidade por orgao**")
-                    st.caption("Compara quais orgaos parecem mais receptivos ou mais restritivos para o tema, com base nas decisoes classificadas.")
+                    st.markdown(f"**Indice de favorabilidade por {eixo_comparativo.lower()}**")
+                    st.caption(
+                        f"Compara quais itens de {rotulo_comparativo.lower()} parecem mais receptivos ou mais restritivos para o tema, com base nas decisoes classificadas."
+                    )
+                    if not favorabilidade_orgaos.empty and favorabilidade_minima_utilizada < 5:
+                        st.caption(
+                            f"Base reduzida para exibicao do grafico: minimo de {favorabilidade_minima_utilizada} decisoes uteis por item de {rotulo_comparativo.lower()}."
+                        )
                     st.pyplot(
-                        fig_favorabilidade_por_orgao(favorabilidade_orgaos.head(10)),
+                        fig_favorabilidade_por_orgao(
+                            favorabilidade_orgaos.head(10),
+                            titulo=f"Indice de favorabilidade por {eixo_comparativo.lower()}",
+                            eixo_label=eixo_comparativo,
+                        ),
                         clear_figure=True,
                     )
                 with col_estrat2:
@@ -3710,35 +4424,54 @@ def render() -> None:
                         st.success("A leitura deste tema nao ativou alertas metodologicos importantes.")
                 col_rank1, col_rank2 = st.columns(2)
                 with col_rank1:
-                    st.markdown("**Orgaos mais favoraveis**")
-                    st.caption("Ranking com base no indice de favorabilidade estimada, considerando apenas orgaos com base util minima.")
+                    st.markdown(f"**{rotulo_comparativo} mais favoraveis**")
+                    st.caption(
+                        f"Ranking com base no indice de favorabilidade estimada, considerando apenas itens de {rotulo_comparativo.lower()} com base util minima."
+                    )
                     if not ranking_favoraveis.empty:
-                        st.dataframe(ranking_favoraveis, use_container_width=True, height=260)
+                        st.dataframe(ranking_favoraveis_view, use_container_width=True, height=260)
                     else:
-                        st.info("Sem base suficiente para ranquear orgaos mais favoraveis neste tema.")
+                        st.info(f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais favoraveis neste tema.")
                 with col_rank2:
-                    st.markdown("**Orgaos mais restritivos**")
-                    st.caption("Mostra os orgaos cujo sinal estimado foi mais desfavoravel no tema, respeitando base minima.")
+                    st.markdown(f"**{rotulo_comparativo} mais restritivos**")
+                    st.caption(
+                        f"Mostra os itens de {rotulo_comparativo.lower()} cujo sinal estimado foi mais desfavoravel no tema, respeitando base minima."
+                    )
                     if not ranking_restritivos.empty:
-                        st.dataframe(ranking_restritivos, use_container_width=True, height=260)
+                        st.dataframe(ranking_restritivos_view, use_container_width=True, height=260)
                     else:
-                        st.info("Sem base suficiente para ranquear orgaos mais restritivos neste tema.")
+                        st.info(f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais restritivos neste tema.")
                 col_tempo_chart, col_tempo_table = st.columns(2)
                 with col_tempo_chart:
-                    st.markdown("**Tempo mediano ate o desfecho por orgao**")
-                    st.caption("Mostra quais orgaos tendem a decidir mais rapido ou mais devagar dentro do tema.")
-                    st.pyplot(fig_tempo_por_orgao(tempo_orgaos.head(10)), clear_figure=True)
+                    st.markdown(f"**Tempo mediano ate o desfecho por {eixo_comparativo.lower()}**")
+                    st.caption(
+                        f"Mostra quais itens de {rotulo_comparativo.lower()} tendem a decidir mais rapido ou mais devagar dentro do tema."
+                    )
+                    if not tempo_orgaos.empty and tempo_minimo_utilizado < 3:
+                        st.caption(
+                            f"Base reduzida para exibicao do grafico: minimo de {tempo_minimo_utilizado} processo(s) com tempo por item de {rotulo_comparativo.lower()}."
+                        )
+                    st.pyplot(
+                        fig_tempo_por_orgao(
+                            tempo_orgaos.head(10),
+                            titulo=f"Tempo mediano por {eixo_comparativo.lower()}",
+                            eixo_label=eixo_comparativo,
+                        ),
+                        clear_figure=True,
+                    )
                     if not tempo_orgaos.empty:
-                        st.dataframe(tempo_orgaos.head(12), use_container_width=True, height=260)
+                        st.dataframe(tempo_orgaos_view.head(12), use_container_width=True, height=260)
                     else:
-                        st.info("Sem base suficiente para comparar tempo mediano por orgao.")
+                        st.info(f"Sem base suficiente para comparar tempo mediano por {rotulo_comparativo.lower()}.")
                 with col_tempo_table:
-                    st.markdown("**Estabilidade decisoria por orgao**")
-                    st.caption("Mostra se cada orgao repete mais o mesmo desfecho ou oscila entre sinais diferentes.")
+                    st.markdown(f"**Estabilidade decisoria por {eixo_comparativo.lower()}**")
+                    st.caption(
+                        f"Mostra se cada item de {rotulo_comparativo.lower()} repete mais o mesmo desfecho ou oscila entre sinais diferentes."
+                    )
                     if not estabilidade_orgaos.empty:
-                        st.dataframe(estabilidade_orgaos.head(12), use_container_width=True, height=320)
+                        st.dataframe(estabilidade_orgaos_view.head(12), use_container_width=True, height=320)
                     else:
-                        st.info("Sem base suficiente para medir estabilidade decisoria por orgao.")
+                        st.info(f"Sem base suficiente para medir estabilidade decisoria por {rotulo_comparativo.lower()}.")
             with tema_tabs[4]:
                 col_classes, col_relacionados = st.columns(2)
                 with col_classes:
