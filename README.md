@@ -36,10 +36,14 @@ Acesso:
 
 Passos no Colab:
 1. Abra o link acima.
-2. Execute a celula de instalacao (`pip`).
-3. Preencha `API_KEY` no formato `APIKey ...`.
-4. Ajuste `TRIBUNAL`, `CLASSE_CODIGO`, `NUMERO_PROCESSO` e `QUANTIDADE`.
-5. Rode as celulas de consulta e graficos.
+2. Execute a celula que clona/sincroniza o repositorio.
+3. Execute a celula de instalacao das dependencias.
+4. Informe a chave `DATAJUD_API_KEY` no formato `APIKey ...`.
+5. Inicie o Streamlit.
+6. Abra o link publico gerado pelo `Cloudflare Tunnel`.
+
+Observacao:
+- O notebook agora sobe o **app completo em Streamlit** dentro do Colab, usando o arquivo `streamlit_app.py` atual do repositorio.
 
 ## API Key DataJud
 No app, use a chave no formato `APIKey ...`.
