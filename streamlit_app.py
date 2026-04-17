@@ -690,6 +690,10 @@ def normalize_numero_processo(raw_numero: str) -> str:
     return somente_digitos or numero
 
 
+def normalize_assunto_filtro(raw_assunto: Any) -> str:
+    return str(raw_assunto or "").strip()
+
+
 def coerce_date_value(value: Any) -> Any:
     if value in (None, "", ()):
         return None
@@ -2246,12 +2250,14 @@ def fetch_hits(
     size: int,
     url: str,
     numero_processo: str = "",
+    assunto_nome: str = "",
     data_inicio: Any = None,
     data_fim: Any = None,
     incluir_movimentos: bool = False,
     modo_consulta: str = "classe_ou_processo",
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
+    assunto_limpo = normalize_assunto_filtro(assunto_nome)
     filtros: list[dict[str, Any]] = []
     if numero_limpo:
         filtros.append({"match": {"numeroProcesso": numero_limpo}})
@@ -2259,6 +2265,8 @@ def fetch_hits(
         pass
     else:
         filtros.append({"match": {"classe.codigo": classe_codigo}})
+        if assunto_limpo:
+            filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
 
     filtro_data = build_data_ajuizamento_range(data_inicio=data_inicio, data_fim=data_fim)
     if filtro_data:
@@ -2764,6 +2772,7 @@ def fetch_strategy_decision_dataframe(
         size=decision_size,
         url=url,
         numero_processo="",
+        assunto_nome=query_context.get("tema_consulta", ""),
         data_inicio=query_context.get("data_inicio_consulta"),
         data_fim=query_context.get("data_fim_consulta"),
         incluir_movimentos=True,
@@ -3694,6 +3703,11 @@ def render() -> None:
             placeholder="Ex.: 50012345620248130024",
             help="Se preenchido, a consulta usa o numero do processo em vez da classe.",
         )
+        tema_consulta = st.text_input(
+            "Tema / assunto (opcional)",
+            placeholder="Ex.: trafico de drogas, dano moral, improbidade",
+            help="Afina a busca dentro da classe e do tribunal usando o assunto do processo no DataJud.",
+        )
         aplicar_periodo = st.checkbox(
             "Filtrar por periodo de ajuizamento",
             value=False,
@@ -3766,14 +3780,20 @@ def render() -> None:
             avisos_consulta: list[str] = []
             try:
                 usar_numero_processo = bool(normalize_numero_processo(numero_processo))
+                tema_consulta_limpo = "" if usar_numero_processo else normalize_assunto_filtro(tema_consulta)
                 data_inicio_consulta = None if usar_numero_processo else data_inicio
                 data_fim_consulta = None if usar_numero_processo else data_fim
+                if usar_numero_processo and normalize_assunto_filtro(tema_consulta):
+                    avisos_consulta.append(
+                        "O filtro de tema/assunto foi ignorado porque a consulta por numero do processo prioriza o caso exato."
+                    )
                 hits = fetch_hits(
                     api_key=api_key,
                     classe_codigo=int(classe_codigo),
                     size=int(size),
                     url=url,
                     numero_processo=numero_processo,
+                    assunto_nome=tema_consulta_limpo,
                     data_inicio=data_inicio_consulta,
                     data_fim=data_fim_consulta,
                     incluir_movimentos=not modo_rapido,
@@ -3817,6 +3837,7 @@ def render() -> None:
                                     size=decisao_size,
                                     url=url,
                                     numero_processo="",
+                                    assunto_nome=tema_consulta_limpo,
                                     data_inicio=data_inicio_consulta,
                                     data_fim=data_fim_consulta,
                                     incluir_movimentos=True,
@@ -3847,6 +3868,7 @@ def render() -> None:
                                 size=mapa_size,
                                 url=url,
                                 numero_processo="",
+                                assunto_nome=tema_consulta_limpo,
                                 data_inicio=data_inicio_consulta,
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
@@ -3876,6 +3898,7 @@ def render() -> None:
                                 size=10000,
                                 url=url,
                                 numero_processo="",
+                                assunto_nome=tema_consulta_limpo,
                                 data_inicio=data_inicio_consulta,
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
@@ -3933,6 +3956,7 @@ def render() -> None:
         st.session_state["estrutura_filtro"] = estrutura_filtro
         st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
         st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
+        st.session_state["tema_consulta_aplicado"] = tema_consulta_limpo
         st.session_state["avisos_consulta"] = avisos_consulta
         st.session_state["last_query_context"] = {
             "classe_codigo": int(classe_codigo),
@@ -3941,6 +3965,7 @@ def render() -> None:
             "estrutura_filtro": estrutura_filtro,
             "data_inicio_consulta": data_inicio_consulta,
             "data_fim_consulta": data_fim_consulta,
+            "tema_consulta": tema_consulta_limpo,
             "query_size": int(size),
             "qtd_decisao": qtd_decisao,
             "usar_numero_processo": bool(usar_numero_processo),
@@ -3977,6 +4002,7 @@ def render() -> None:
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
     periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
+    tema_consulta_aplicado = normalize_assunto_filtro(st.session_state.get("tema_consulta_aplicado", ""))
     avisos_consulta = st.session_state.get("avisos_consulta", [])
     last_query_context = st.session_state.get("last_query_context", {})
     derived_state = st.session_state.get("derived_state")
@@ -4013,6 +4039,8 @@ def render() -> None:
             f"Filtro estrutural aplicado: {format_estrutura_option(estrutura_filtro)}. "
             "Quando a API nao traz a estrutura de forma explicita, o app estima pelo grau e pelo nome do orgao julgador."
         )
+    if tema_consulta_aplicado and not usar_numero_processo:
+        st.caption(f"Filtro tematico aplicado na busca: `{tema_consulta_aplicado}`.")
     if periodo_aplicado:
         st.caption(f"Filtro temporal aplicado no ajuizamento: {periodo_aplicado}.")
     elif periodo_ignorado_numero:
