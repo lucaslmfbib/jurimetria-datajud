@@ -26,9 +26,9 @@ DATAJUD_MAX_RETRIES = 2
 FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
 FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
-THEME_DIRECT_FAST_QUERY_LIMIT = 350
-THEME_DIRECT_FAST_DECISION_LIMIT = 150
-THEME_DIRECT_TIMEOUT_SECONDS = 45
+THEME_DIRECT_FAST_QUERY_LIMIT = 250
+THEME_DIRECT_FAST_DECISION_LIMIT = 0
+THEME_DIRECT_TIMEOUT_SECONDS = 30
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
 THEME_SUGGESTION_SAMPLE_SIZE = 800
@@ -2374,6 +2374,7 @@ def fetch_hits(
         "_source": campos_source,
         "query": query,
         "sort": [{"dataAjuizamento": {"order": "desc"}}],
+        "track_total_hits": False,
     }
     headers = {
         "Authorization": normalize_api_key(api_key),
@@ -2406,6 +2407,7 @@ def fetch_hits(
             "_source": campos_source,
             "query": query,
             "sort": sort,
+            "track_total_hits": False,
         }
         if search_after is not None:
             paged_payload["search_after"] = search_after
@@ -4228,13 +4230,16 @@ def render() -> None:
                         if size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
                             if busca_tema_direto:
                                 decisao_size = min(size_int, THEME_DIRECT_FAST_DECISION_LIMIT)
+                                avisos_consulta.append(
+                                    "Busca por tema em modo rapido: a primeira resposta veio sem leitura decisoria automatica para ficar mais rapida. Se precisar, a estrategia pode ser reforcada depois."
+                                )
                             else:
                                 decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
                                 mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
                         else:
                             if busca_tema_direto:
                                 avisos_consulta.append(
-                                    "Busca por tema em modo rapido: o app priorizou a resposta principal, pulou a leitura decisoria complementar e reaproveitou a propria amostra para o mapa."
+                                    "Busca por tema em modo rapido: o app priorizou a resposta principal, nao carregou a leitura decisoria automatica e reaproveitou a propria amostra para o mapa."
                                 )
                             else:
                                 avisos_consulta.append(
