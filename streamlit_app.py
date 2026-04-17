@@ -1307,7 +1307,7 @@ def decision_by_orgao_dataframe(
     resultado["mediana_dias"] = pd.to_numeric(
         resultado["orgao_julgador"].map(medianas),
         errors="coerce",
-    ).round(1)
+    ).round(4)
     resultado["mediana_dias"] = resultado["mediana_dias"].where(
         resultado["mediana_dias"].notna(),
         pd.NA,
@@ -1607,8 +1607,8 @@ def decision_time_by_orgao_dataframe(
     if resultado.empty:
         return pd.DataFrame(columns=columns)
 
-    resultado["mediana_dias"] = pd.to_numeric(resultado["mediana_dias"], errors="coerce").round(1)
-    resultado["p75_dias"] = pd.to_numeric(resultado["p75_dias"], errors="coerce").round(1)
+    resultado["mediana_dias"] = pd.to_numeric(resultado["mediana_dias"], errors="coerce").round(4)
+    resultado["p75_dias"] = pd.to_numeric(resultado["p75_dias"], errors="coerce").round(4)
     resultado = resultado.sort_values(
         ["mediana_dias", "processos_com_tempo"],
         ascending=[True, False],
@@ -2509,6 +2509,25 @@ def format_int_br(value: Any) -> str:
         return f"{int(value):,}".replace(",", ".")
     except Exception:
         return str(value)
+
+
+def format_duration_label(value_in_days: Any) -> str:
+    try:
+        valor = float(value_in_days)
+    except Exception:
+        return "-"
+
+    if pd.isna(valor):
+        return "-"
+    if valor < 0:
+        return "-"
+    if valor == 0:
+        return "Mesmo dia"
+    if valor < 1:
+        return f"{valor * 24:.1f} h"
+    if valor < 10:
+        return f"{valor:.1f} dias"
+    return f"{valor:.0f} dias"
 
 
 def render_theme_metric_card(
@@ -3467,13 +3486,37 @@ def fig_tempo_por_orgao(
         for orgao in base["orgao_julgador"].astype(str)
     ]
     valores = pd.to_numeric(base["mediana_dias"], errors="coerce").fillna(0.0)
-    max_valor = float(valores.max()) if not valores.empty else 0.0
+    max_valor_dias = float(valores.max()) if not valores.empty else 0.0
+    if max_valor_dias <= 0:
+        fig, ax = plt.subplots(figsize=(10, 4.2))
+        ax.set_title(titulo)
+        ax.text(
+            0.5,
+            0.5,
+            "Os tempos identificados ficaram no mesmo dia do ajuizamento nesta amostra.",
+            ha="center",
+            va="center",
+        )
+        ax.axis("off")
+        return fig
+
+    usar_horas = max_valor_dias < 1
+    if usar_horas:
+        valores_plot = valores * 24
+        xlabel = "Mediana de horas ate o desfecho"
+        formatador = lambda valor: f"{valor:.1f} h"
+    else:
+        valores_plot = valores
+        xlabel = "Mediana de dias ate o desfecho"
+        formatador = lambda valor: f"{valor:.1f}" if valor < 10 else f"{valor:.0f}"
+
+    max_valor = float(valores_plot.max()) if not valores_plot.empty else 0.0
     margem_esquerda = min(0.42, 0.18 + (max((len(label) for label in labels), default=20) * 0.0055))
 
     fig, ax = plt.subplots(figsize=(12, max(4.8, len(base) * 0.72 + 1.8)))
-    ax.barh(labels, valores, color="#4E79A7", alpha=0.92)
+    ax.barh(labels, valores_plot, color="#4E79A7", alpha=0.92)
     ax.invert_yaxis()
-    ax.set_xlabel("Mediana de dias ate o desfecho")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(eixo_label)
     ax.set_title(titulo)
     ax.grid(axis="x", linestyle="--", alpha=0.25)
@@ -3481,8 +3524,14 @@ def fig_tempo_por_orgao(
     ax.tick_params(axis="y", labelsize=9)
     ax.margins(y=0.03)
 
-    for i, valor in enumerate(valores):
-        ax.text(valor + max(max_valor * 0.015, 0.8), i, f"{valor:.1f}", va="center", fontsize=9)
+    for i, valor in enumerate(valores_plot):
+        ax.text(
+            valor + max(max_valor * 0.015, 0.8),
+            i,
+            formatador(float(valor)),
+            va="center",
+            fontsize=9,
+        )
 
     fig.subplots_adjust(left=margem_esquerda, right=0.97, top=0.90, bottom=0.12)
     return fig
@@ -4164,7 +4213,7 @@ def render() -> None:
             dias_decisao = pd.to_numeric(
                 df_tema_decisao["dias_ate_decisao_proxy"], errors="coerce"
             ).dropna()
-            mediana_dias = f"{dias_decisao.median():.0f} dias" if not dias_decisao.empty else "-"
+            mediana_dias = format_duration_label(dias_decisao.median()) if not dias_decisao.empty else "-"
             top_orgao_tema = str(concentracao_tema.get("top_orgao", "")).strip()
             top_orgao_tema_curto = (
                 top_orgao_tema if len(top_orgao_tema) <= 42 else top_orgao_tema[:42] + "..."
@@ -4223,6 +4272,9 @@ def render() -> None:
             orgaos_tema_view = orgaos_tema.rename(
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
+            if "mediana_dias" in orgaos_tema_view.columns:
+                orgaos_tema_view["mediana_ate_desfecho"] = orgaos_tema_view["mediana_dias"].apply(format_duration_label)
+                orgaos_tema_view = orgaos_tema_view.drop(columns=["mediana_dias"])
             favorabilidade_orgaos_view = favorabilidade_orgaos.rename(
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
@@ -4252,6 +4304,18 @@ def render() -> None:
             tempo_orgaos_plot = tempo_orgaos if not tempo_orgaos.empty else tempo_orgaos_fallback
             tempo_orgaos_plot_view = tempo_orgaos_plot.rename(
                 columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            if "mediana_dias" in tempo_orgaos_plot_view.columns:
+                tempo_orgaos_plot_view["mediana_ate_desfecho"] = tempo_orgaos_plot_view["mediana_dias"].apply(
+                    format_duration_label
+                )
+            if "p75_dias" in tempo_orgaos_plot_view.columns:
+                tempo_orgaos_plot_view["p75_ate_desfecho"] = tempo_orgaos_plot_view["p75_dias"].apply(
+                    format_duration_label
+                )
+            tempo_orgaos_plot_view = tempo_orgaos_plot_view.drop(
+                columns=["mediana_dias", "p75_dias"],
+                errors="ignore",
             )
 
             d1, d2, d3, d4 = st.columns(4)
@@ -4664,6 +4728,20 @@ def render() -> None:
                         st.caption(
                             "Leitura exploratoria: usei a mediana de tempo disponivel no resumo por recorte, mesmo sem massa suficiente para o comparativo completo."
                         )
+                    tempo_valores_plot = pd.to_numeric(
+                        tempo_orgaos_plot["mediana_dias"],
+                        errors="coerce",
+                    ).dropna() if not tempo_orgaos_plot.empty and "mediana_dias" in tempo_orgaos_plot.columns else pd.Series(dtype="float64")
+                    if not tempo_valores_plot.empty:
+                        max_tempo_dias = float(tempo_valores_plot.max())
+                        if max_tempo_dias <= 0:
+                            st.caption(
+                                "Nesta amostra, os movimentos classificados caem no mesmo dia do ajuizamento, então o comparativo de tempo fica pouco informativo."
+                            )
+                        elif max_tempo_dias < 1:
+                            st.caption(
+                                "Os tempos medianos deste tema ficaram abaixo de 1 dia. O grafico converte automaticamente para horas para evitar zeros aparentes."
+                            )
                     st.pyplot(
                         fig_tempo_por_orgao(
                             tempo_orgaos_plot.head(10),
