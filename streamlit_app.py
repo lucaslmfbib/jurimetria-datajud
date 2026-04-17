@@ -28,7 +28,7 @@ FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
-THEME_SUGGESTION_SAMPLE_SIZE = MAX_PAGE_SIZE
+THEME_SUGGESTION_SAMPLE_SIZE = 3000
 THEME_SUGGESTION_MAX_ITEMS = 500
 
 CODIGOS_TJM = [
@@ -2275,6 +2275,7 @@ def fetch_hits(
     data_fim: Any = None,
     incluir_movimentos: bool = False,
     modo_consulta: str = "classe_ou_processo",
+    source_fields: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
     assunto_limpo = normalize_assunto_filtro(assunto_nome)
@@ -2297,7 +2298,7 @@ def fetch_hits(
     else:
         query = {"match_all": {}}
 
-    campos_source = [
+    campos_source = list(source_fields) if source_fields else [
         "numeroProcesso",
         "classe.codigo",
         "classe.nome",
@@ -2309,7 +2310,7 @@ def fetch_hits(
         "grau",
         "assuntos",
     ]
-    if incluir_movimentos:
+    if incluir_movimentos and "movimentos" not in campos_source:
         campos_source.append("movimentos")
 
     payload = {
@@ -3081,6 +3082,11 @@ def fetch_theme_suggestions_dataframe(
         data_fim=data_fim,
         incluir_movimentos=False,
         modo_consulta="classe_ou_processo",
+        source_fields=[
+            "orgaoJulgador.nome",
+            "grau",
+            "assuntos",
+        ],
     )
     df_sugestoes = hits_to_dataframe(hits, processar_movimentos=False)
     df_sugestoes = filter_dataframe_by_estrutura(df_sugestoes, tribunal_sigla, estrutura_filtro)
@@ -3820,7 +3826,7 @@ def render() -> None:
             if st.session_state.get(tema_select_key) not in tema_options:
                 st.session_state[tema_select_key] = tema_atual_sidebar if tema_atual_sidebar in tema_options else ""
             tema_consulta = st.selectbox(
-                "Tema / assunto (opcional)",
+                "Tema",
                 options=tema_options,
                 key=tema_select_key,
                 format_func=lambda valor: "Todos os temas" if not valor else valor,
@@ -3870,7 +3876,7 @@ def render() -> None:
                     f"Clique para carregar a lista pesquisavel de temas desta combinacao de tribunal e classe em uma amostra de ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
                 )
             st.text_input(
-                "Tema / assunto (opcional)",
+                "Tema",
                 value=tema_atual_sidebar,
                 placeholder="A lista pesquisavel aparece depois de carregar os temas",
                 disabled=True,
