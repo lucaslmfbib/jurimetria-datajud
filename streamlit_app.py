@@ -26,7 +26,7 @@ DATAJUD_MAX_RETRIES = 2
 FAST_COMPLEMENTARY_SKIP_THRESHOLD = 300
 FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
-THEME_DIRECT_FAST_DECISION_LIMIT = 0
+THEME_DIRECT_FAST_DECISION_LIMIT = 180
 THEME_DIRECT_TIMEOUT_SECONDS = 30
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
@@ -34,6 +34,17 @@ THEME_SUGGESTION_SAMPLE_SIZE = 800
 THEME_SUGGESTION_MAX_ITEMS = 500
 THEME_SUGGESTION_TIMEOUT_SECONDS = 18
 APP_VERSION_LABEL = "Versao esperada: 17/04/2026 | Ajuste de Classes com mais processos"
+DECISION_SOURCE_FIELDS = [
+    "numeroProcesso",
+    "classe.codigo",
+    "classe.nome",
+    "dataAjuizamento",
+    "orgaoJulgador.nome",
+    "orgaoJulgador.codigoMunicipioIBGE",
+    "grau",
+    "assuntos",
+    "movimentos",
+]
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -2918,6 +2929,7 @@ def fetch_strategy_decision_dataframe(
         data_fim=query_context.get("data_fim_consulta"),
         incluir_movimentos=True,
         modo_consulta="tema_direto" if busca_tema_direto else "classe_ou_processo",
+        source_fields=DECISION_SOURCE_FIELDS,
         timeout_seconds=timeout_seconds,
     )
     df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
@@ -4140,7 +4152,7 @@ def render() -> None:
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         if modo_busca_sidebar == "tema" and modo_rapido:
             st.caption(
-                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida, reduz as leituras complementares e organiza a amostra por data dentro do proprio app."
+                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida e mantem uma leitura estrategica inicial mais leve para nao esconder os comparativos principais."
             )
         if size > MAX_PAGE_SIZE:
             st.info(
@@ -4226,24 +4238,18 @@ def render() -> None:
 
                 if not usar_numero_processo:
                     if modo_rapido:
-                        if size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
-                            if busca_tema_direto:
-                                decisao_size = min(size_int, THEME_DIRECT_FAST_DECISION_LIMIT)
-                                avisos_consulta.append(
-                                    "Busca por tema em modo rapido: a primeira resposta veio sem leitura decisoria automatica para ficar mais rapida. Se precisar, a estrategia pode ser reforcada depois."
-                                )
-                            else:
-                                decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
-                                mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
+                        if busca_tema_direto:
+                            decisao_size = min(size_int, THEME_DIRECT_FAST_DECISION_LIMIT)
+                            avisos_consulta.append(
+                                "Busca por tema em modo rapido: mantive uma leitura estrategica inicial mais leve para nao sumirem os comparativos principais. Se quiser aprofundar, a estrategia ainda pode ser reforcada depois."
+                            )
+                        elif size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
+                            decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
+                            mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
                         else:
-                            if busca_tema_direto:
-                                avisos_consulta.append(
-                                    "Busca por tema em modo rapido: o app priorizou a resposta principal, nao carregou a leitura decisoria automatica e reaproveitou a propria amostra para o mapa."
-                                )
-                            else:
-                                avisos_consulta.append(
-                                    "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
-                                )
+                            avisos_consulta.append(
+                                "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
+                            )
                     else:
                         mapa_size = min(max(size_int, 2000), MAX_PAGE_SIZE)
                         decisao_size = min(max(size_int, 400), 1200)
@@ -4262,6 +4268,7 @@ def render() -> None:
                                     data_fim=data_fim_consulta,
                                     incluir_movimentos=True,
                                     modo_consulta=modo_consulta_base,
+                                    source_fields=DECISION_SOURCE_FIELDS,
                                 )
                                 df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
                             except DataJudRequestError as exc:
