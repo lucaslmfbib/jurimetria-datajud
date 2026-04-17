@@ -714,6 +714,11 @@ def build_theme_suggestion_cache_key(
     )
 
 
+def sync_tema_text_from_select() -> None:
+    tema_escolhido = normalize_assunto_filtro(st.session_state.get("tema_consulta_select", ""))
+    st.session_state["tema_consulta_text_fallback"] = tema_escolhido
+
+
 def coerce_date_value(value: Any) -> Any:
     if value in (None, "", ()):
         return None
@@ -3799,6 +3804,7 @@ def render() -> None:
             st.session_state[tema_sugestoes_status_key] = ""
             st.session_state["tema_consulta_select"] = ""
             st.session_state["tema_consulta_text_fallback"] = ""
+            st.session_state["tema_consulta_busca_local"] = ""
 
         tema_sugestoes_df = st.session_state.get(tema_sugestoes_key, pd.DataFrame(columns=["assunto", "quantidade"]))
         tema_sugestoes_status = str(st.session_state.get(tema_sugestoes_status_key, ""))
@@ -3811,77 +3817,109 @@ def render() -> None:
         )
         tema_sugestoes = [tema for tema in tema_sugestoes if tema]
         tema_select_key = "tema_consulta_select"
+        tema_text_key = "tema_consulta_text_fallback"
+        tema_busca_key = "tema_consulta_busca_local"
+        if tema_text_key not in st.session_state:
+            st.session_state[tema_text_key] = ""
+        if tema_busca_key not in st.session_state:
+            st.session_state[tema_busca_key] = ""
+        if tema_select_key not in st.session_state:
+            st.session_state[tema_select_key] = ""
         tema_atual_sidebar = normalize_assunto_filtro(
-            st.session_state.get(tema_select_key, "")
-            or st.session_state.get("tema_consulta_text_fallback", "")
+            st.session_state.get(tema_text_key, "")
+            or st.session_state.get(tema_select_key, "")
         )
-        tema_options = [""] + tema_sugestoes
-        if tema_atual_sidebar and tema_atual_sidebar not in tema_options:
-            tema_options.append(tema_atual_sidebar)
-
         tema_consulta = tema_atual_sidebar
         if usar_numero_processo_sidebar:
             st.caption("A lista de temas fica desativada quando a busca e por numero do processo.")
-        elif tema_sugestoes:
-            if st.session_state.get(tema_select_key) not in tema_options:
-                st.session_state[tema_select_key] = tema_atual_sidebar if tema_atual_sidebar in tema_options else ""
-            tema_consulta = st.selectbox(
-                "Tema",
-                options=tema_options,
-                key=tema_select_key,
-                format_func=lambda valor: "Todos os temas" if not valor else valor,
-                help="Comece a digitar para filtrar a lista de temas sugeridos para esta combinacao de tribunal e classe.",
-            )
-            st.caption(
-                f"Lista carregada com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
-            )
-        else:
-            if st.button(
-                "Carregar temas do codigo + sigla",
-                key="carregar_temas_codigo_sigla",
-                use_container_width=True,
-            ):
-                with st.spinner("Carregando lista de temas..."):
-                    try:
-                        tema_sugestoes_df = fetch_theme_suggestions_dataframe(
-                            api_key=api_key,
-                            classe_codigo=int(classe_codigo),
-                            url=build_url(tribunal_sigla),
-                            tribunal_sigla=tribunal_sigla,
-                            estrutura_filtro=estrutura_filtro,
-                            data_inicio=data_inicio if aplicar_periodo else None,
-                            data_fim=data_fim if aplicar_periodo else None,
-                        )
-                    except DataJudRequestError:
-                        tema_sugestoes_erro = (
-                            "Nao consegui carregar a lista de temas agora. "
-                            "Voce ainda pode executar a consulta sem esse filtro."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    except Exception:
-                        tema_sugestoes_erro = (
-                            "A lista de temas nao ficou disponivel nesta tentativa."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    else:
-                        st.session_state[tema_sugestoes_key] = tema_sugestoes_df
-                        st.session_state[tema_sugestoes_status_key] = (
-                            f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes a partir de uma amostra ampla."
-                        )
-                        st.rerun()
-            if tema_sugestoes_status:
-                st.caption(tema_sugestoes_status)
-            else:
-                st.caption(
-                    f"Clique para carregar a lista pesquisavel de temas desta combinacao de tribunal e classe em uma amostra de ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
-                )
             st.text_input(
                 "Tema",
                 value=tema_atual_sidebar,
-                placeholder="A lista pesquisavel aparece depois de carregar os temas",
                 disabled=True,
-                key="tema_consulta_text_placeholder",
+                key="tema_consulta_text_disabled",
             )
+        else:
+            tema_consulta = normalize_assunto_filtro(
+                st.text_input(
+                    "Tema",
+                    key=tema_text_key,
+                    placeholder="Digite um tema para filtrar a consulta",
+                    help="Voce pode digitar diretamente ou usar a lista de temas sugeridos abaixo.",
+                )
+            )
+            with st.expander("Temas sugeridos", expanded=False):
+                if tema_sugestoes:
+                    busca_local = normalize_assunto_filtro(
+                        st.text_input(
+                            "Pesquisar na lista de temas",
+                            key=tema_busca_key,
+                            placeholder="Filtre as sugestoes por palavra-chave",
+                        )
+                    )
+                    temas_filtrados = [
+                        tema for tema in tema_sugestoes
+                        if busca_local.lower() in tema.lower()
+                    ] if busca_local else tema_sugestoes
+                    tema_options = [""] + temas_filtrados
+                    if tema_consulta and tema_consulta not in tema_options:
+                        tema_options.append(tema_consulta)
+                    if st.session_state.get(tema_select_key) not in tema_options:
+                        st.session_state[tema_select_key] = (
+                            tema_consulta if tema_consulta in tema_options else ""
+                        )
+                    st.selectbox(
+                        "Selecionar tema sugerido",
+                        options=tema_options,
+                        key=tema_select_key,
+                        format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
+                        help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
+                        on_change=sync_tema_text_from_select,
+                    )
+                    if busca_local and not temas_filtrados:
+                        st.caption("Nenhum tema sugerido bateu com essa busca.")
+                    st.caption(
+                        f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
+                    )
+                else:
+                    if st.button(
+                        "Mostrar temas sugeridos",
+                        key="carregar_temas_codigo_sigla",
+                        use_container_width=True,
+                    ):
+                        with st.spinner("Carregando temas sugeridos..."):
+                            try:
+                                tema_sugestoes_df = fetch_theme_suggestions_dataframe(
+                                    api_key=api_key,
+                                    classe_codigo=int(classe_codigo),
+                                    url=build_url(tribunal_sigla),
+                                    tribunal_sigla=tribunal_sigla,
+                                    estrutura_filtro=estrutura_filtro,
+                                    data_inicio=data_inicio if aplicar_periodo else None,
+                                    data_fim=data_fim if aplicar_periodo else None,
+                                )
+                            except DataJudRequestError:
+                                tema_sugestoes_erro = (
+                                    "Nao consegui carregar a lista de temas agora. "
+                                    "Voce ainda pode digitar o tema manualmente."
+                                )
+                                st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                            except Exception:
+                                tema_sugestoes_erro = (
+                                    "A lista de temas nao ficou disponivel nesta tentativa."
+                                )
+                                st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                            else:
+                                st.session_state[tema_sugestoes_key] = tema_sugestoes_df
+                                st.session_state[tema_sugestoes_status_key] = (
+                                    f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
+                                )
+                                st.rerun()
+                    if tema_sugestoes_status:
+                        st.caption(tema_sugestoes_status)
+                    else:
+                        st.caption(
+                            "Se quiser ajuda para preencher o campo, carregue uma lista de temas sugeridos para esta combinacao de tribunal e classe."
+                        )
         if tema_consulta and not usar_numero_processo_sidebar:
             st.caption(
                 "Com um tema selecionado, a quantidade da consulta passa a contar apenas processos que tenham esse assunto."
