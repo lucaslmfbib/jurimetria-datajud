@@ -2587,6 +2587,43 @@ def top_orgaos_julgadores_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) 
     return top
 
 
+def top_comarcas_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
+    if df_anpp.empty:
+        return pd.DataFrame(columns=["municipio_comarca", "quantidade", "participacao"])
+
+    orgaos = (
+        df_anpp["orgao_julgador"].fillna("").astype(str).str.strip()
+        if "orgao_julgador" in df_anpp.columns
+        else pd.Series([""] * len(df_anpp), index=df_anpp.index)
+    )
+    municipios = (
+        df_anpp["municipio"].tolist()
+        if "municipio" in df_anpp.columns
+        else [None] * len(df_anpp)
+    )
+    labels = pd.Series(
+        [municipio_comarca_label(municipio, orgao) for municipio, orgao in zip(municipios, orgaos.tolist())],
+        index=df_anpp.index,
+    ).fillna("").astype(str).str.strip()
+    labels = labels[labels != ""]
+    if labels.empty:
+        return pd.DataFrame(columns=["municipio_comarca", "quantidade", "participacao"])
+
+    total = int(len(labels))
+    top = (
+        labels.value_counts()
+        .head(max_items)
+        .rename_axis("municipio_comarca")
+        .reset_index(name="quantidade")
+    )
+    top["participacao"] = (
+        (top["quantidade"] / total * 100)
+        .round(1)
+        .map(lambda valor: f"{valor:.1f}%")
+    )
+    return top
+
+
 def format_int_br(value: Any) -> str:
     try:
         return f"{int(value):,}".replace(",", ".")
@@ -2782,6 +2819,7 @@ def build_query_derived_state(
 ) -> dict[str, Any]:
     top_100_df = top_100_to_dataframe(top_100)
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
+    top_comarcas_df = top_comarcas_dataframe(df_anpp)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
     map_insights = build_map_insights(top_codigos, top_orgaos_sigla, top_assuntos, qtd_mapa)
@@ -2805,6 +2843,7 @@ def build_query_derived_state(
         "df_view": dataframe_for_display(df_anpp, max_rows=400),
         "top_100_df": top_100_df,
         "top_orgaos_df": top_orgaos_df,
+        "top_comarcas_df": top_comarcas_df,
         "sample_insights": sample_insights,
         "map_insights": map_insights,
         "assuntos_distintos": assuntos_distintos,
@@ -4343,6 +4382,7 @@ def render() -> None:
     df_view = derived_state["df_view"]
     top_100_df = derived_state["top_100_df"]
     top_orgaos_df = derived_state["top_orgaos_df"]
+    top_comarcas_df = derived_state["top_comarcas_df"]
     sample_insights = derived_state["sample_insights"]
     map_insights = derived_state["map_insights"]
     tema_insights: list[str] = []
@@ -5252,9 +5292,12 @@ def render() -> None:
         st.caption("Mostra em quais horas houve mais ajuizamentos na amostra consultada.")
         st.pyplot(fig_horario(df_anpp), clear_figure=True)
     with col_b:
-        st.subheader("Top 10 orgaos julgadores")
-        st.caption("Mostra os orgaos que mais aparecem na amostra atual, com a participacao de cada um no total consultado.")
-        st.dataframe(top_orgaos_df, use_container_width=True, height=320)
+        st.subheader("Top 10 municipios/comarcas")
+        st.caption("Mostra onde a amostra mais se concentra por municipio ou comarca, com a participacao de cada item no total consultado.")
+        if isinstance(top_comarcas_df, pd.DataFrame) and not top_comarcas_df.empty:
+            st.dataframe(top_comarcas_df, use_container_width=True, height=320)
+        else:
+            st.info("Sem base suficiente para ranquear municipios/comarcas nesta amostra.")
 
     st.subheader("Ajuizamentos mensais")
     st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
