@@ -4500,13 +4500,14 @@ def render() -> None:
             )
             if int(dimensao_recomendada_state.get("score", 0) or 0) > 0:
                 st.caption(
-                    f"Recorte recomendado agora: {COMPARISON_DIMENSIONS[dimensao_recomendada]['label']} "
-                    f"com {format_int_br(dimensao_recomendada_state.get('decisoes_uteis', 0))} decisoes uteis e "
-                    f"{format_int_br(dimensao_recomendada_state.get('grupos_favorabilidade', 0))} itens com sinal comparavel."
+                    f"Recorte recomendado agora: {COMPARISON_DIMENSIONS[dimensao_recomendada]['label']}. "
+                    f"Hoje ele e o recorte com mais base comparavel, com "
+                    f"{format_int_br(dimensao_recomendada_state.get('decisoes_uteis', 0))} decisoes uteis e "
+                    f"{format_int_br(dimensao_recomendada_state.get('grupos_favorabilidade', 0))} itens que ja podem ser comparados."
                 )
             else:
                 st.caption(
-                    "O app tenta sugerir o recorte com mais massa critica. Se todos vierem fracos, use a ampliacao da leitura estrategica."
+                    "O app tenta sugerir o recorte com mais massa critica. Se todos vierem fracos, a comparacao ainda fica exploratoria."
                 )
             dimensao_comparativa = st.radio(
                 "Recorte comparativo da estrategia",
@@ -4674,20 +4675,58 @@ def render() -> None:
             )
 
             d1, d2, d3, d4 = st.columns(4)
-            render_theme_metric_card(d1, "Processos do tema", f"{total_tema:,}".replace(",", "."))
-            render_theme_metric_card(d2, "Desfecho classificado", f"{cobertura:.1f}%")
+            render_theme_metric_card(d1, "Processos na amostra", f"{total_tema:,}".replace(",", "."))
+            render_theme_metric_card(d2, "Cobertura de desfecho", f"{cobertura:.1f}%")
             render_theme_metric_card(d3, "Desfecho predominante", desfecho_predominante_card)
-            render_theme_metric_card(d4, "Movimento final identificado", f"{cobertura_movimento:.1f}%")
+            render_theme_metric_card(d4, "Cobertura de movimento final", f"{cobertura_movimento:.1f}%")
             e1, e2, e3, e4 = st.columns(4)
-            render_theme_metric_card(e1, "Robustez da amostra", forca_tema)
+            render_theme_metric_card(e1, "Confianca da leitura", forca_tema)
             render_theme_metric_card(e2, "Favorabilidade estimada", leitura_favorabilidade, delta_favorabilidade)
-            render_theme_metric_card(e3, "Estabilidade decisoria", perfil_estabilidade, delta_estabilidade)
+            render_theme_metric_card(e3, "Repeticao do padrao", perfil_estabilidade, delta_estabilidade)
             render_theme_metric_card(e4, "Mudanca recente", mudanca_label, delta_mudanca)
-            st.caption(
-                "Legenda: desfecho predominante = sinal mais comum; robustez = forca da base; "
-                "favorabilidade = tendencia mais pro ou contra; estabilidade = repeticao do padrao; "
-                "mudanca recente = se esse comportamento mudou nos ultimos meses."
+            resumo_estatistico_tema = (
+                f"Neste tema, o app olhou {format_int_br(total_tema)} processos da amostra atual. "
+                f"Em {cobertura_movimento:.1f}% deles encontrou algum movimento final e em {cobertura:.1f}% conseguiu classificar um desfecho automaticamente. "
+                f"O desfecho mais comum foi `{desfecho_predominante_card}`."
             )
+            if leitura_favorabilidade == "Sem base":
+                resumo_estatistico_tema += (
+                    " A favorabilidade ficou sem base porque ainda faltaram desfechos uteis pro/contra, "
+                    "ou porque os sinais vieram muito neutros ou processuais."
+                )
+            else:
+                resumo_estatistico_tema += (
+                    f" Com isso, a tendencia estimada do tema ficou em `{leitura_favorabilidade}`."
+                )
+            st.info(resumo_estatistico_tema)
+            with st.expander("Como ler estes indicadores", expanded=False):
+                st.markdown(
+                    f"- `Processos na amostra`: quantos processos da consulta atual contem este tema. Aqui: {format_int_br(total_tema)}."
+                )
+                st.markdown(
+                    f"- `Cobertura de movimento final`: percentual de processos do tema em que o app encontrou algum movimento final util. Aqui: {cobertura_movimento:.1f}%."
+                )
+                st.markdown(
+                    f"- `Cobertura de desfecho`: percentual de processos do tema em que o app conseguiu classificar o desfecho automaticamente. Aqui: {cobertura:.1f}%."
+                )
+                st.markdown(
+                    "- `Desfecho predominante`: o desfecho classificado que mais se repetiu entre os casos lidos."
+                )
+                st.markdown(
+                    "- `Confianca da leitura`: resume se a base esta mais forte ou mais fraca, olhando tamanho da amostra e cobertura de desfechos."
+                )
+                st.markdown(
+                    "- `Favorabilidade estimada`: tenta medir se o tema pende mais para sinais favoraveis ou restritivos. Ela so usa desfechos uteis para pro/contra; sinais neutros ou processuais pesam menos ou podem nao entrar."
+                )
+                st.markdown(
+                    "- `Repeticao do padrao`: mostra se o tema tende a repetir o mesmo tipo de desfecho ou se oscila muito."
+                )
+                st.markdown(
+                    "- `Mudanca recente`: compara os meses mais recentes com a janela anterior para ver se o comportamento mudou."
+                )
+                st.caption(
+                    "Quando aparecer `Sem base`, isso nao quer dizer ausencia total de dados. Significa que ainda nao ha massa util suficiente para aquela metrica especifica."
+                )
             tema_insights = build_decision_theme_insights(
                 tema_escolhido,
                 total_tema,
