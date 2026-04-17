@@ -735,6 +735,8 @@ def current_query_can_seed_theme_suggestions(
         return False
     if bool(query_context.get("usar_numero_processo", False)):
         return False
+    if bool(query_context.get("busca_tema_direto", False)):
+        return False
     if normalize_assunto_filtro(query_context.get("tema_consulta", "")):
         return False
     if int(query_context.get("classe_codigo", 0) or 0) != int(classe_codigo or 0):
@@ -2329,7 +2331,11 @@ def fetch_hits(
     if numero_limpo:
         filtros.append({"match": {"numeroProcesso": numero_limpo}})
     elif modo_consulta == "mapa_tribunal":
-        pass
+        if assunto_limpo:
+            filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
+    elif modo_consulta == "tema_direto":
+        if assunto_limpo:
+            filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
     else:
         filtros.append({"match": {"classe.codigo": classe_codigo}})
         if assunto_limpo:
@@ -2825,6 +2831,7 @@ def fetch_strategy_decision_dataframe(
     target_size: int | None = None,
 ) -> tuple[pd.DataFrame, int]:
     classe_codigo = int(query_context.get("classe_codigo", 0) or 0)
+    busca_tema_direto = bool(query_context.get("busca_tema_direto", False))
     url = str(query_context.get("url", "")).strip()
     tribunal_sigla = str(query_context.get("tribunal_sigla", "")).strip()
     estrutura_filtro = str(query_context.get("estrutura_filtro", "Todos"))
@@ -2832,7 +2839,7 @@ def fetch_strategy_decision_dataframe(
     qtd_decisao_atual = int(query_context.get("qtd_decisao", 0) or 0)
     decision_size = int(target_size or strategy_reload_target_size(query_size, qtd_decisao_atual))
 
-    if not api_key or not classe_codigo or not url or not tribunal_sigla:
+    if not api_key or not url or not tribunal_sigla or (not busca_tema_direto and not classe_codigo):
         raise ValueError("Nao encontrei os parametros da ultima consulta para ampliar a leitura estrategica.")
 
     hits_decisao = fetch_hits(
@@ -2845,7 +2852,7 @@ def fetch_strategy_decision_dataframe(
         data_inicio=query_context.get("data_inicio_consulta"),
         data_fim=query_context.get("data_fim_consulta"),
         incluir_movimentos=True,
-        modo_consulta="classe_ou_processo",
+        modo_consulta="tema_direto" if busca_tema_direto else "classe_ou_processo",
     )
     df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
     if df_decisao.empty:
@@ -3875,6 +3882,7 @@ def render() -> None:
             or st.session_state.get(tema_select_key, "")
         )
         tema_consulta = tema_atual_sidebar
+        busca_tema_direto_sidebar = False
         if usar_numero_processo_sidebar:
             st.caption("A lista de temas fica desativada quando a busca e por numero do processo.")
             st.text_input(
@@ -3892,99 +3900,109 @@ def render() -> None:
                     help="Voce pode digitar diretamente ou usar a lista de temas sugeridos abaixo.",
                 )
             )
-            if st.button(
-                "Carregar temas sugeridos",
-                key="carregar_temas_codigo_sigla",
-                use_container_width=True,
-            ):
-                temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
-                if current_query_can_seed_theme_suggestions(
-                    classe_codigo=classe_codigo,
-                    tribunal_sigla=tribunal_sigla,
-                    estrutura_filtro=estrutura_filtro,
-                    data_inicio=data_inicio if aplicar_periodo else None,
-                    data_fim=data_fim if aplicar_periodo else None,
+            busca_tema_direto_sidebar = st.checkbox(
+                "Pesquisar este tema em todo o tribunal",
+                value=False,
+                help="Ignora o codigo da classe e busca o tema diretamente na sigla selecionada.",
+            )
+            if busca_tema_direto_sidebar:
+                st.caption(
+                    "Neste modo, o app usa o Tema como filtro principal dentro do tribunal selecionado e ignora o codigo da classe."
+                )
+            else:
+                if st.button(
+                    "Carregar temas sugeridos",
+                    key="carregar_temas_codigo_sigla",
+                    use_container_width=True,
                 ):
-                    temas_da_consulta_atual = build_theme_suggestions_from_current_query()
-                if not temas_da_consulta_atual.empty:
-                    st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
-                    st.session_state[tema_sugestoes_status_key] = (
-                        f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
-                    )
-                    st.rerun()
-                with st.spinner("Carregando temas sugeridos..."):
-                    try:
-                        tema_sugestoes_df = fetch_theme_suggestions_dataframe(
-                            api_key=api_key,
-                            classe_codigo=int(classe_codigo),
-                            url=build_url(tribunal_sigla),
-                            tribunal_sigla=tribunal_sigla,
-                            estrutura_filtro=estrutura_filtro,
-                            data_inicio=data_inicio if aplicar_periodo else None,
-                            data_fim=data_fim if aplicar_periodo else None,
+                    temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
+                    if current_query_can_seed_theme_suggestions(
+                        classe_codigo=classe_codigo,
+                        tribunal_sigla=tribunal_sigla,
+                        estrutura_filtro=estrutura_filtro,
+                        data_inicio=data_inicio if aplicar_periodo else None,
+                        data_fim=data_fim if aplicar_periodo else None,
+                    ):
+                        temas_da_consulta_atual = build_theme_suggestions_from_current_query()
+                    if not temas_da_consulta_atual.empty:
+                        st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
+                        st.session_state[tema_sugestoes_status_key] = (
+                            f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
                         )
-                    except DataJudRequestError:
-                        tema_sugestoes_erro = (
-                            "Os temas sugeridos demoraram demais para carregar no DataJud. "
-                            "Voce ainda pode digitar o tema manualmente."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    except Exception:
-                        tema_sugestoes_erro = (
-                            "A lista de temas nao ficou disponivel nesta tentativa."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    else:
-                        st.session_state[tema_sugestoes_key] = tema_sugestoes_df
-                        if tema_sugestoes_df.empty:
-                            st.session_state[tema_sugestoes_status_key] = (
-                                "Nao encontrei temas sugeridos nesta amostra. "
+                        st.rerun()
+                    with st.spinner("Carregando temas sugeridos..."):
+                        try:
+                            tema_sugestoes_df = fetch_theme_suggestions_dataframe(
+                                api_key=api_key,
+                                classe_codigo=int(classe_codigo),
+                                url=build_url(tribunal_sigla),
+                                tribunal_sigla=tribunal_sigla,
+                                estrutura_filtro=estrutura_filtro,
+                                data_inicio=data_inicio if aplicar_periodo else None,
+                                data_fim=data_fim if aplicar_periodo else None,
+                            )
+                        except DataJudRequestError:
+                            tema_sugestoes_erro = (
+                                "Os temas sugeridos demoraram demais para carregar no DataJud. "
                                 "Voce ainda pode digitar o tema manualmente."
                             )
-                        else:
-                            st.session_state[tema_sugestoes_status_key] = (
-                                f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
+                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                        except Exception:
+                            tema_sugestoes_erro = (
+                                "A lista de temas nao ficou disponivel nesta tentativa."
                             )
-                        st.rerun()
-            if tema_sugestoes_status:
-                st.caption(tema_sugestoes_status)
-            else:
-                st.caption(
-                    "Se quiser ajuda para preencher o campo, carregue os temas sugeridos para esta combinacao de tribunal e classe."
-                )
-            if tema_sugestoes:
-                busca_local = normalize_assunto_filtro(
-                    st.text_input(
-                        "Pesquisar nos temas sugeridos",
-                        key=tema_busca_key,
-                        placeholder="Filtre as sugestoes por palavra-chave",
-                    )
-                )
-                temas_filtrados = [
-                    tema for tema in tema_sugestoes
-                    if busca_local.lower() in tema.lower()
-                ] if busca_local else tema_sugestoes
-                tema_options = [""] + temas_filtrados
-                if tema_consulta and tema_consulta not in tema_options:
-                    tema_options.append(tema_consulta)
-                if st.session_state.get(tema_select_key) not in tema_options:
-                    st.session_state[tema_select_key] = (
-                        tema_consulta if tema_consulta in tema_options else ""
-                    )
-                st.selectbox(
-                    "Selecionar tema sugerido",
-                    options=tema_options,
-                    key=tema_select_key,
-                    format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
-                    help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
-                    on_change=sync_tema_text_from_select,
-                )
-                if busca_local and not temas_filtrados:
-                    st.caption("Nenhum tema sugerido bateu com essa busca.")
+                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                        else:
+                            st.session_state[tema_sugestoes_key] = tema_sugestoes_df
+                            if tema_sugestoes_df.empty:
+                                st.session_state[tema_sugestoes_status_key] = (
+                                    "Nao encontrei temas sugeridos nesta amostra. "
+                                    "Voce ainda pode digitar o tema manualmente."
+                                )
+                            else:
+                                st.session_state[tema_sugestoes_status_key] = (
+                                    f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
+                                )
+                            st.rerun()
+                if tema_sugestoes_status:
+                    st.caption(tema_sugestoes_status)
                 else:
                     st.caption(
-                        f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
+                        "Se quiser ajuda para preencher o campo, carregue os temas sugeridos para esta combinacao de tribunal e classe."
                     )
+                if tema_sugestoes:
+                    busca_local = normalize_assunto_filtro(
+                        st.text_input(
+                            "Pesquisar nos temas sugeridos",
+                            key=tema_busca_key,
+                            placeholder="Filtre as sugestoes por palavra-chave",
+                        )
+                    )
+                    temas_filtrados = [
+                        tema for tema in tema_sugestoes
+                        if busca_local.lower() in tema.lower()
+                    ] if busca_local else tema_sugestoes
+                    tema_options = [""] + temas_filtrados
+                    if tema_consulta and tema_consulta not in tema_options:
+                        tema_options.append(tema_consulta)
+                    if st.session_state.get(tema_select_key) not in tema_options:
+                        st.session_state[tema_select_key] = (
+                            tema_consulta if tema_consulta in tema_options else ""
+                        )
+                    st.selectbox(
+                        "Selecionar tema sugerido",
+                        options=tema_options,
+                        key=tema_select_key,
+                        format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
+                        help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
+                        on_change=sync_tema_text_from_select,
+                    )
+                    if busca_local and not temas_filtrados:
+                        st.caption("Nenhum tema sugerido bateu com essa busca.")
+                    else:
+                        st.caption(
+                            f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
+                        )
         if tema_consulta and not usar_numero_processo_sidebar:
             st.caption(
                 "Com um tema selecionado, a quantidade da consulta passa a contar apenas processos que tenham esse assunto."
@@ -4038,15 +4056,25 @@ def render() -> None:
             try:
                 usar_numero_processo = bool(normalize_numero_processo(numero_processo))
                 tema_consulta_limpo = "" if usar_numero_processo else normalize_assunto_filtro(tema_consulta)
+                busca_tema_direto = bool(busca_tema_direto_sidebar and tema_consulta_limpo and not usar_numero_processo)
+                classe_codigo_consulta = 0 if busca_tema_direto else int(classe_codigo)
+                modo_consulta_base = "tema_direto" if busca_tema_direto else "classe_ou_processo"
                 data_inicio_consulta = None if usar_numero_processo else data_inicio
                 data_fim_consulta = None if usar_numero_processo else data_fim
+                if busca_tema_direto_sidebar and not tema_consulta_limpo and not usar_numero_processo:
+                    st.error("Preencha o campo Tema para usar a busca direta por tema no tribunal.")
+                    return
                 if usar_numero_processo and normalize_assunto_filtro(tema_consulta):
                     avisos_consulta.append(
                         "O filtro de tema/assunto foi ignorado porque a consulta por numero do processo prioriza o caso exato."
                     )
+                elif busca_tema_direto:
+                    avisos_consulta.append(
+                        "Busca direta por tema ativa: o app ignorou o codigo da classe e pesquisou este tema no tribunal selecionado."
+                    )
                 hits = fetch_hits(
                     api_key=api_key,
-                    classe_codigo=int(classe_codigo),
+                    classe_codigo=classe_codigo_consulta,
                     size=int(size),
                     url=url,
                     numero_processo=numero_processo,
@@ -4054,7 +4082,7 @@ def render() -> None:
                     data_inicio=data_inicio_consulta,
                     data_fim=data_fim_consulta,
                     incluir_movimentos=not modo_rapido,
-                    modo_consulta="classe_ou_processo",
+                    modo_consulta=modo_consulta_base,
                 )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 if not usar_numero_processo:
@@ -4090,7 +4118,7 @@ def render() -> None:
                             try:
                                 hits_decisao = fetch_hits(
                                     api_key=api_key,
-                                    classe_codigo=int(classe_codigo),
+                                    classe_codigo=classe_codigo_consulta,
                                     size=decisao_size,
                                     url=url,
                                     numero_processo="",
@@ -4098,7 +4126,7 @@ def render() -> None:
                                     data_inicio=data_inicio_consulta,
                                     data_fim=data_fim_consulta,
                                     incluir_movimentos=True,
-                                    modo_consulta="classe_ou_processo",
+                                    modo_consulta=modo_consulta_base,
                                 )
                                 df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
                             except DataJudRequestError as exc:
@@ -4121,7 +4149,7 @@ def render() -> None:
                         try:
                             hits_mapa = fetch_hits(
                                 api_key=api_key,
-                                classe_codigo=int(classe_codigo),
+                                classe_codigo=classe_codigo_consulta,
                                 size=mapa_size,
                                 url=url,
                                 numero_processo="",
@@ -4151,7 +4179,7 @@ def render() -> None:
                         try:
                             hits_mensal = fetch_hits(
                                 api_key=api_key,
-                                classe_codigo=int(classe_codigo),
+                                classe_codigo=classe_codigo_consulta,
                                 size=10000,
                                 url=url,
                                 numero_processo="",
@@ -4159,7 +4187,7 @@ def render() -> None:
                                 data_inicio=data_inicio_consulta,
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
-                                modo_consulta="classe_ou_processo",
+                                modo_consulta=modo_consulta_base,
                             )
                             df_mensal_candidato = hits_to_dataframe(hits_mensal, processar_movimentos=False)
                             df_mensal_candidato = filter_dataframe_by_estrutura(
@@ -4210,13 +4238,15 @@ def render() -> None:
         st.session_state["df_decisao"] = df_decisao
         st.session_state["qtd_decisao"] = qtd_decisao
         st.session_state["usar_numero_processo"] = usar_numero_processo
+        st.session_state["busca_tema_direto"] = bool(busca_tema_direto)
         st.session_state["estrutura_filtro"] = estrutura_filtro
         st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
         st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
         st.session_state["tema_consulta_aplicado"] = tema_consulta_limpo
         st.session_state["avisos_consulta"] = avisos_consulta
         st.session_state["last_query_context"] = {
-            "classe_codigo": int(classe_codigo),
+            "classe_codigo": int(classe_codigo_consulta),
+            "classe_codigo_referencia": int(classe_codigo),
             "url": url,
             "tribunal_sigla": tribunal_sigla,
             "estrutura_filtro": estrutura_filtro,
@@ -4226,6 +4256,7 @@ def render() -> None:
             "query_size": int(size),
             "qtd_decisao": qtd_decisao,
             "usar_numero_processo": bool(usar_numero_processo),
+            "busca_tema_direto": bool(busca_tema_direto),
         }
         st.session_state["derived_state"] = build_query_derived_state(
             df_anpp=df_anpp,
@@ -4256,6 +4287,7 @@ def render() -> None:
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
     qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
+    busca_tema_direto = bool(st.session_state.get("busca_tema_direto", False))
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
     periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
@@ -4298,6 +4330,8 @@ def render() -> None:
         )
     if tema_consulta_aplicado and not usar_numero_processo:
         st.caption(f"Filtro tematico aplicado na busca: `{tema_consulta_aplicado}`.")
+    if busca_tema_direto and not usar_numero_processo:
+        st.caption("Modo de busca ativa: tema direto no tribunal, sem limitar pelo codigo da classe.")
     if periodo_aplicado:
         st.caption(f"Filtro temporal aplicado no ajuizamento: {periodo_aplicado}.")
     elif periodo_ignorado_numero:
@@ -4323,7 +4357,10 @@ def render() -> None:
         )
         pode_ampliar_leitura = (
             isinstance(last_query_context, dict)
-            and bool(last_query_context.get("classe_codigo"))
+            and (
+                bool(last_query_context.get("busca_tema_direto", False))
+                or bool(last_query_context.get("classe_codigo"))
+            )
             and bool(last_query_context.get("url"))
             and bool(last_query_context.get("tribunal_sigla"))
             and not bool(last_query_context.get("usar_numero_processo", False))
@@ -4853,7 +4890,10 @@ def render() -> None:
                 )
                 pode_reforcar_estrategia = (
                     isinstance(last_query_context, dict)
-                    and bool(last_query_context.get("classe_codigo"))
+                    and (
+                        bool(last_query_context.get("busca_tema_direto", False))
+                        or bool(last_query_context.get("classe_codigo"))
+                    )
                     and bool(last_query_context.get("url"))
                     and bool(last_query_context.get("tribunal_sigla"))
                     and not bool(last_query_context.get("usar_numero_processo", False))
