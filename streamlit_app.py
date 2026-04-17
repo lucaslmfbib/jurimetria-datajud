@@ -1880,6 +1880,51 @@ def decision_outcome_mix_by_orgao_dataframe(
     return pivot
 
 
+def outcome_mix_profile_summary(df_mix: pd.DataFrame) -> dict[str, Any]:
+    if df_mix.empty or "orgao_julgador" not in df_mix.columns:
+        return {
+            "uniforme": False,
+            "desfecho_dominante": "",
+            "desfechos_ativos": 0,
+            "perfis_unicos": 0,
+        }
+
+    base = df_mix.copy()
+    colunas_desfecho = [
+        coluna for coluna in base.columns if coluna not in {"orgao_julgador", "total_classificados"}
+    ]
+    if not colunas_desfecho:
+        return {
+            "uniforme": False,
+            "desfecho_dominante": "",
+            "desfechos_ativos": 0,
+            "perfis_unicos": 0,
+        }
+
+    base = base[base["total_classificados"] > 0].copy()
+    if base.empty:
+        return {
+            "uniforme": False,
+            "desfecho_dominante": "",
+            "desfechos_ativos": 0,
+            "perfis_unicos": 0,
+        }
+
+    percentuais = base[colunas_desfecho].div(base["total_classificados"], axis=0).fillna(0.0)
+    desfechos_ativos = [coluna for coluna in colunas_desfecho if float(base[coluna].sum()) > 0]
+    perfis_unicos = int(percentuais.round(3).drop_duplicates().shape[0])
+    desfecho_dominante = ""
+    if desfechos_ativos:
+        desfecho_dominante = max(desfechos_ativos, key=lambda coluna: float(base[coluna].sum()))
+
+    return {
+        "uniforme": bool(len(desfechos_ativos) <= 1 or perfis_unicos <= 1),
+        "desfecho_dominante": str(desfecho_dominante),
+        "desfechos_ativos": int(len(desfechos_ativos)),
+        "perfis_unicos": perfis_unicos,
+    }
+
+
 def decision_coverage_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
     if df_anpp.empty:
         return {
@@ -3298,6 +3343,73 @@ def fig_desfechos_por_orgao(
     return fig
 
 
+def fig_base_classificada_por_orgao(
+    df_resumo: pd.DataFrame,
+    titulo: str = "Base classificada por orgao julgador",
+    eixo_label: str = "Orgao julgador",
+) -> Any:
+    plt = get_plt()
+    if df_resumo.empty or "orgao_julgador" not in df_resumo.columns:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title(titulo)
+        ax.text(0.5, 0.5, "Sem base suficiente para comparar cobertura por orgao.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    colunas_necessarias = {"processos_tema", "com_desfecho"}
+    if not colunas_necessarias.issubset(set(df_resumo.columns)):
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title(titulo)
+        ax.text(0.5, 0.5, "Sem dados de volume e cobertura para este comparativo.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base = df_resumo.copy()
+    base["processos_tema"] = pd.to_numeric(base["processos_tema"], errors="coerce").fillna(0)
+    base["com_desfecho"] = pd.to_numeric(base["com_desfecho"], errors="coerce").fillna(0)
+    base = base[base["processos_tema"] > 0].copy()
+    if base.empty:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.set_title(titulo)
+        ax.text(0.5, 0.5, "Sem processos suficientes para este comparativo.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    base["cobertura_pct_num"] = (base["com_desfecho"] / base["processos_tema"] * 100).round(1)
+    base = base.sort_values(
+        ["com_desfecho", "cobertura_pct_num", "processos_tema"],
+        ascending=[False, False, False],
+    ).head(10)
+    labels = [
+        orgao if len(orgao) <= 30 else orgao[:30] + "..."
+        for orgao in base["orgao_julgador"].astype(str)
+    ]
+
+    fig, ax = plt.subplots(figsize=(10.5, max(4.2, len(base) * 0.62 + 1.8)))
+    ax.barh(labels, base["processos_tema"], color="#D7DCE5", alpha=0.95, label="Processos do tema")
+    ax.barh(labels, base["com_desfecho"], color="#4E79A7", alpha=0.95, label="Com desfecho classificado")
+    ax.invert_yaxis()
+    ax.set_xlabel("Quantidade de processos")
+    ax.set_ylabel(eixo_label)
+    ax.set_title(titulo)
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+
+    max_valor = float(base["processos_tema"].max()) if not base.empty else 0.0
+    deslocamento = max(max_valor * 0.015, 0.4)
+    for i, (_, linha) in enumerate(base.iterrows()):
+        ax.text(
+            float(linha["processos_tema"]) + deslocamento,
+            i,
+            f"{int(linha['com_desfecho'])}/{int(linha['processos_tema'])} | {float(linha['cobertura_pct_num']):.1f}%",
+            va="center",
+            fontsize=9,
+        )
+
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.28), ncol=2, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
 def fig_favorabilidade_por_orgao(
     df_favorabilidade: pd.DataFrame,
     titulo: str = "Indice de favorabilidade por orgao",
@@ -4008,6 +4120,7 @@ def render() -> None:
             comparison_state = comparison_state_by_dimension.get(dimensao_comparativa, {})
             orgaos_tema = comparison_state.get("orgaos_tema", pd.DataFrame())
             mix_orgaos_tema = comparison_state.get("mix_orgaos_tema", pd.DataFrame())
+            mix_profile_info = outcome_mix_profile_summary(mix_orgaos_tema)
             favorabilidade_orgaos = comparison_state.get("favorabilidade_orgaos", pd.DataFrame())
             favorabilidade_minima_utilizada = int(
                 comparison_state.get("favorabilidade_minima", 5) or 5
@@ -4276,22 +4389,48 @@ def render() -> None:
                     f"Recorte ativo: {rotulo_comparativo}. O comparativo abaixo resume volume, cobertura e sinal principal neste nivel."
                 )
                 if not mix_orgaos_tema.empty:
-                    st.markdown(f"**Desfecho por {eixo_comparativo.lower()}**")
-                    st.caption(
-                        f"Compara a composicao dos desfechos classificados entre os principais itens de {rotulo_comparativo.lower()}."
-                    )
+                    if bool(mix_profile_info.get("uniforme", False)):
+                        st.markdown(f"**Base classificada por {eixo_comparativo.lower()}**")
+                        desfecho_uniforme = str(mix_profile_info.get("desfecho_dominante", "")).strip()
+                        if desfecho_uniforme:
+                            st.caption(
+                                f"Como praticamente todos os itens deste recorte caem no mesmo desfecho (`{desfecho_uniforme}`), o app mostra onde ha mais volume e cobertura de leitura em vez de repetir barras identicas."
+                            )
+                        else:
+                            st.caption(
+                                f"Como o padrao classificado ficou muito uniforme neste recorte, o app mostra volume e cobertura de leitura em vez de repetir barras identicas."
+                            )
+                    else:
+                        st.markdown(f"**Desfecho por {eixo_comparativo.lower()}**")
+                        st.caption(
+                            f"Compara a composicao dos desfechos classificados entre os principais itens de {rotulo_comparativo.lower()}."
+                        )
                     col_mix_chart, col_mix_table = st.columns(2)
                     with col_mix_chart:
-                        st.pyplot(
-                            fig_desfechos_por_orgao(
-                                mix_orgaos_tema,
-                                titulo=f"Desfecho por {eixo_comparativo.lower()}",
-                                eixo_label=eixo_comparativo,
-                            ),
-                            clear_figure=True,
-                        )
+                        if bool(mix_profile_info.get("uniforme", False)):
+                            st.pyplot(
+                                fig_base_classificada_por_orgao(
+                                    orgaos_tema,
+                                    titulo=f"Base classificada por {eixo_comparativo.lower()}",
+                                    eixo_label=eixo_comparativo,
+                                ),
+                                clear_figure=True,
+                            )
+                        else:
+                            st.pyplot(
+                                fig_desfechos_por_orgao(
+                                    mix_orgaos_tema,
+                                    titulo=f"Desfecho por {eixo_comparativo.lower()}",
+                                    eixo_label=eixo_comparativo,
+                                ),
+                                clear_figure=True,
+                            )
                     with col_mix_table:
-                        st.dataframe(mix_orgaos_tema_view, use_container_width=True, height=360)
+                        st.dataframe(
+                            orgaos_tema_view if bool(mix_profile_info.get("uniforme", False)) else mix_orgaos_tema_view,
+                            use_container_width=True,
+                            height=360,
+                        )
                 else:
                     st.info(
                         f"Ainda nao ha desfechos classificados suficientes para comparar {rotulo_comparativo.lower()} neste tema."
@@ -4400,17 +4539,36 @@ def render() -> None:
                             clear_figure=True,
                         )
                     elif not mix_orgaos_tema.empty:
-                        st.caption(
-                            "Como ainda nao ha base util pro/contra suficiente, o app mostra abaixo a composicao dos desfechos classificados por recorte."
-                        )
-                        st.pyplot(
-                            fig_desfechos_por_orgao(
-                                mix_orgaos_tema.head(10),
-                                titulo=f"Composicao dos desfechos por {eixo_comparativo.lower()}",
-                                eixo_label=eixo_comparativo,
-                            ),
-                            clear_figure=True,
-                        )
+                        if bool(mix_profile_info.get("uniforme", False)):
+                            desfecho_uniforme = str(mix_profile_info.get("desfecho_dominante", "")).strip()
+                            if desfecho_uniforme:
+                                st.caption(
+                                    f"Como todos os itens relevantes ficaram concentrados em `{desfecho_uniforme}`, o app troca o grafico de favorabilidade por um comparativo da base classificada de cada recorte."
+                                )
+                            else:
+                                st.caption(
+                                    "Como o padrao classificado ficou praticamente igual entre os recortes, o app troca o grafico de favorabilidade por um comparativo da base classificada."
+                                )
+                            st.pyplot(
+                                fig_base_classificada_por_orgao(
+                                    orgaos_tema,
+                                    titulo=f"Base classificada por {eixo_comparativo.lower()}",
+                                    eixo_label=eixo_comparativo,
+                                ),
+                                clear_figure=True,
+                            )
+                        else:
+                            st.caption(
+                                "Como ainda nao ha base util pro/contra suficiente, o app mostra abaixo a composicao dos desfechos classificados por recorte."
+                            )
+                            st.pyplot(
+                                fig_desfechos_por_orgao(
+                                    mix_orgaos_tema.head(10),
+                                    titulo=f"Composicao dos desfechos por {eixo_comparativo.lower()}",
+                                    eixo_label=eixo_comparativo,
+                                ),
+                                clear_figure=True,
+                            )
                     else:
                         st.info(
                             f"Ainda nao encontrei desfechos classificados suficientes para montar um comparativo por {rotulo_comparativo.lower()}."
