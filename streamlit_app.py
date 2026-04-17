@@ -3810,14 +3810,14 @@ def render() -> None:
                 "tema": "Tema no tribunal",
                 "processo": "Numero do processo",
             }[valor],
-            help="Escolha o caminho mais intuitivo para a consulta.",
+            help="Escolha como voce quer montar a consulta.",
         )
         if modo_busca_sidebar == "classe":
-            st.caption("Use quando voce souber a classe processual e quiser refinar com um tema opcional.")
+            st.caption("Escolha a classe e, se quiser, refine por tema.")
         elif modo_busca_sidebar == "tema":
-            st.caption("Use quando quiser pesquisar direto por um assunto, como `estupro`, em todo o tribunal.")
+            st.caption("Pesquise um assunto direto no tribunal, como `estupro`.")
         else:
-            st.caption("Use para abrir um processo especifico pelo numero unico.")
+            st.caption("Busque um caso especifico pelo numero unico.")
 
         if "classe_codigo_sidebar" not in st.session_state:
             st.session_state["classe_codigo_sidebar"] = 12729
@@ -3829,7 +3829,7 @@ def render() -> None:
                     min_value=1,
                     step=1,
                     key="classe_codigo_sidebar",
-                    help="Codigo CNJ do tipo de processo ou recurso, como apelacao, cumprimento de sentenca ou execucao fiscal.",
+                    help="Codigo CNJ do tipo de processo ou recurso.",
                 )
             )
             render_codigo_sugestoes(tribunal_sigla)
@@ -3843,7 +3843,7 @@ def render() -> None:
                 "Numero do processo",
                 key="numero_processo_sidebar",
                 placeholder="Ex.: 50012345620248130024",
-                help="Consulta o caso exato pelo numero unico do processo.",
+                help="Consulta o caso exato.",
             )
 
         aplicar_periodo = False
@@ -3853,10 +3853,10 @@ def render() -> None:
             aplicar_periodo = st.checkbox(
                 "Filtrar por periodo de ajuizamento",
                 value=False,
-                help="Limita a amostra a um intervalo de datas de ajuizamento.",
+                help="Limita a busca a um intervalo de ajuizamento.",
             )
         else:
-            st.caption("No modo por numero do processo, o app ignora periodo e outros filtros para priorizar o caso exato.")
+            st.caption("Neste modo, o app ignora periodo e outros filtros para priorizar o caso exato.")
         if aplicar_periodo:
             hoje = date.today()
             inicio_padrao = date(hoje.year, 1, 1)
@@ -3926,21 +3926,21 @@ def render() -> None:
                     "Tema principal",
                     key=tema_text_key,
                     placeholder="Ex.: estupro, trafico de drogas, improbidade administrativa",
-                    help="Busca o assunto diretamente em todo o tribunal selecionado.",
+                    help="Use o assunto como filtro principal.",
                 )
             )
-            st.caption("Aqui o tema vira o filtro principal da consulta dentro do tribunal escolhido.")
+            st.caption("O tema sera buscado em todo o tribunal selecionado.")
         else:
             tema_consulta = normalize_assunto_filtro(
                 st.text_input(
                     "Tema (opcional)",
                     key=tema_text_key,
                     placeholder="Digite um tema para refinar a classe processual",
-                    help="Use para afunilar a classe processual por assunto.",
+                    help="Use para afunilar a classe por assunto.",
                 )
             )
             if st.button(
-                "Carregar temas sugeridos",
+                "Mostrar temas da classe",
                 key="carregar_temas_codigo_sigla",
                 use_container_width=True,
             ):
@@ -3956,7 +3956,7 @@ def render() -> None:
                 if not temas_da_consulta_atual.empty:
                     st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
                     st.session_state[tema_sugestoes_status_key] = (
-                        f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
+                        f"Usei a consulta atual para montar {format_int_br(len(temas_da_consulta_atual))} sugestoes."
                     )
                     st.rerun()
                 with st.spinner("Carregando temas sugeridos..."):
@@ -3972,8 +3972,8 @@ def render() -> None:
                         )
                     except DataJudRequestError:
                         tema_sugestoes_erro = (
-                            "Os temas sugeridos demoraram demais para carregar no DataJud. "
-                            "Voce ainda pode digitar o tema manualmente."
+                            "Os temas sugeridos demoraram para carregar. "
+                            "Voce ainda pode digitar o tema."
                         )
                         st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
                     except Exception:
@@ -3986,23 +3986,23 @@ def render() -> None:
                         if tema_sugestoes_df.empty:
                             st.session_state[tema_sugestoes_status_key] = (
                                 "Nao encontrei temas sugeridos nesta amostra. "
-                                "Voce ainda pode digitar o tema manualmente."
+                                "Voce ainda pode digitar o tema."
                             )
                         else:
                             st.session_state[tema_sugestoes_status_key] = (
-                                f"Lista de temas carregada com {format_int_br(len(tema_sugestoes_df))} opcoes."
+                                f"Lista carregada com {format_int_br(len(tema_sugestoes_df))} sugestoes."
                             )
                         st.rerun()
             if tema_sugestoes_status:
                 st.caption(tema_sugestoes_status)
             else:
                 st.caption(
-                    "Se quiser ajuda para preencher o campo, carregue os temas sugeridos para esta combinacao de tribunal e classe."
+                    "Se quiser ajuda, carregue temas sugeridos desta classe."
                 )
             if tema_sugestoes:
                 busca_local = normalize_assunto_filtro(
                     st.text_input(
-                        "Pesquisar nos temas sugeridos",
+                        "Filtrar sugestoes de tema",
                         key=tema_busca_key,
                         placeholder="Filtre as sugestoes por palavra-chave",
                     )
@@ -4019,41 +4019,41 @@ def render() -> None:
                         tema_consulta if tema_consulta in tema_options else ""
                     )
                 st.selectbox(
-                    "Selecionar tema sugerido",
+                    "Usar tema sugerido",
                     options=tema_options,
                     key=tema_select_key,
-                    format_func=lambda valor: "Nenhum tema sugerido selecionado" if not valor else valor,
-                    help="Use a busca acima para filtrar a lista e, se quiser, preencher o campo Tema automaticamente.",
+                    format_func=lambda valor: "Nao usar sugestao" if not valor else valor,
+                    help="Escolha uma sugestao para preencher o campo Tema.",
                     on_change=sync_tema_text_from_select,
                 )
                 if busca_local and not temas_filtrados:
                     st.caption("Nenhum tema sugerido bateu com essa busca.")
                 else:
                     st.caption(
-                        f"Lista com {format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros desta combinacao de tribunal e classe."
+                        f"{format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
                     )
         if tema_consulta and not usar_numero_processo_sidebar:
             st.caption(
-                "Com um tema selecionado, a quantidade da consulta passa a contar apenas processos que tenham esse assunto."
+                "A quantidade passa a contar apenas processos com esse tema."
             )
         st.markdown("**3. Tamanho e velocidade**")
         st.caption(
-            "No modo rapido, o app prioriza a resposta principal. Em buscas pequenas, ele pode reduzir ou pular leituras complementares para responder mais rapido."
+            "No modo rapido, o app prioriza a resposta principal e pode reduzir leituras complementares."
         )
         modo_rapido = st.checkbox(
             "Modo rapido (recomendado)",
             value=True,
-            help="Reduz processamento interno para acelerar a resposta.",
+            help="Acelera a resposta.",
         )
         ampliar_historico = st.checkbox(
             "Ampliar historico mensal automaticamente (mais lento)",
             value=False,
-            help="Faz nova consulta com 10.000 registros para tentar preencher 12 meses no grafico mensal.",
+            help="Tenta preencher melhor o grafico mensal.",
         )
         mostrar_graficos_avancados = st.checkbox(
             "Exibir graficos avancados (mais lento)",
             value=False,
-            help="Ative para ver fluxo mensal, tempo de tramitacao e heatmap.",
+            help="Mostra graficos extras.",
         )
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         if size > MAX_PAGE_SIZE:
@@ -4879,7 +4879,7 @@ def render() -> None:
                     )
             with tema_tabs[3]:
                 st.caption(
-                    "Aqui o app tenta transformar a leitura do tema em sinais praticos. Quando a base estiver curta, ele prioriza cobertura, volume e consistencia antes de sugerir favorabilidade."
+                    "Esta aba tenta traduzir o tema em sinais praticos. Primeiro veja a leitura principal; depois use os detalhes para confirmar."
                 )
                 decisoes_uteis_tema = int(favorabilidade_tema.get("decisoes_uteis", 0) or 0)
                 total_classificados_tema = int(favorabilidade_tema.get("total_classificados", 0) or 0)
@@ -4904,13 +4904,39 @@ def render() -> None:
                     leitura_tempo_label = "Em dias"
 
                 if not favorabilidade_orgaos.empty:
-                    painel_principal_label = "Favorabilidade"
+                    leitura_principal_label = "Favorabilidade"
+                    leitura_principal_texto = (
+                        f"Ja ha base para comparar {rotulo_comparativo.lower()} por sinal mais favoravel ou mais restritivo."
+                    )
+                    leitura_principal_delta = (
+                        f"Minimo usado: {favorabilidade_minima_utilizada} decisoes uteis"
+                        if favorabilidade_minima_utilizada < 5
+                        else None
+                    )
                 elif not mix_orgaos_tema.empty and not bool(mix_profile_info.get("uniforme", False)):
-                    painel_principal_label = "Composicao"
+                    leitura_principal_label = "Composicao"
+                    leitura_principal_texto = (
+                        f"Ainda nao ha base forte para pro/contra. Comece pela composicao dos desfechos por {rotulo_comparativo.lower()}."
+                    )
+                    leitura_principal_delta = None
                 elif not orgaos_tema.empty:
-                    painel_principal_label = "Base classificada"
+                    leitura_principal_label = "Cobertura"
+                    leitura_principal_texto = (
+                        f"O tema ficou mais uniforme neste recorte. Leia volume e cobertura por {rotulo_comparativo.lower()} antes de concluir favorabilidade."
+                    )
+                    leitura_principal_delta = None
                 else:
-                    painel_principal_label = "Sem base"
+                    leitura_principal_label = "Exploratoria"
+                    leitura_principal_texto = (
+                        "A base ainda esta curta para uma leitura comparativa mais firme."
+                    )
+                    leitura_principal_delta = None
+
+                mudanca_card_label = (
+                    mudanca_label
+                    if int(mudanca_padrao.get("janela_meses", 0) or 0) > 0
+                    else "Sem serie"
+                )
 
                 estrategia_fraca = (
                     favorabilidade_orgaos.empty
@@ -4934,71 +4960,26 @@ def render() -> None:
                 )
 
                 s1, s2, s3, s4 = st.columns(4)
-                render_theme_metric_card(s1, "Base util estrategica", base_util_estrategica)
-                render_theme_metric_card(s2, "Recorte ativo", rotulo_comparativo)
-                render_theme_metric_card(s3, "Painel principal", painel_principal_label)
-                render_theme_metric_card(s4, "Leitura de tempo", leitura_tempo_label)
+                render_theme_metric_card(s1, "Base util", base_util_estrategica)
+                render_theme_metric_card(s2, "Leitura principal", leitura_principal_label, leitura_principal_delta)
+                render_theme_metric_card(s3, "Mudanca recente", mudanca_card_label)
+                render_theme_metric_card(s4, "Tempo", leitura_tempo_label)
 
-                if estrategia_fraca:
-                    if pode_reforcar_estrategia:
-                        aviso_col, acao_col = st.columns([1.6, 1.0])
+                guia_col, cuidado_col = st.columns([1.15, 0.85])
+                with guia_col:
+                    st.markdown("**1. O que olhar primeiro**")
+                    if not favorabilidade_orgaos.empty:
+                        st.success(leitura_principal_texto)
+                    elif not orgaos_tema.empty:
+                        st.info(leitura_principal_texto)
                     else:
-                        aviso_col, acao_col = st.columns([1.0, 1.0])
-                    with aviso_col:
-                        st.info(
-                            "A leitura estrategica deste tema ainda esta sensivel a base curta. Quando isso acontecer, prefira usar cobertura, estabilidade e concentracao do recorte antes de concluir favorabilidade."
-                        )
-                    if pode_reforcar_estrategia:
-                        with acao_col:
-                            if st.button(
-                                f"Reforcar base estrategica (ate {format_int_br(strategy_target_size)})",
-                                key=f"reforcar_estrategia_{tema_escolhido}",
-                                use_container_width=True,
-                            ):
-                                with st.spinner("Ampliando base estrategica deste tema..."):
-                                    try:
-                                        df_decisao_reforcado, decision_size = fetch_strategy_decision_dataframe(
-                                            api_key=api_key,
-                                            query_context=last_query_context,
-                                            target_size=strategy_target_size,
-                                        )
-                                    except DataJudRequestError as exc:
-                                        st.error(
-                                            "Nao consegui ampliar a base estrategica nesta tentativa. "
-                                            f"{exc}"
-                                        )
-                                    except Exception as exc:
-                                        st.error(str(exc))
-                                    else:
-                                        if df_decisao_reforcado.empty:
-                                            st.warning(
-                                                "A ampliacao foi executada, mas ainda nao voltou base estrategica suficiente para este filtro."
-                                            )
-                                        else:
-                                            replace_decision_state_in_session(
-                                                df_decisao_reforcado,
-                                                target_size=decision_size,
-                                                aviso=(
-                                                    "Base estrategica ampliada sob demanda para melhorar comparativos de favorabilidade "
-                                                    f"e tempo com ate {format_int_br(decision_size)} registros."
-                                                ),
-                                            )
-                                            st.success(
-                                                "Base estrategica atualizada. Mantive o tema selecionado para voce continuar daqui."
-                                            )
-                                            st.rerun()
+                        st.warning(leitura_principal_texto)
 
-                painel_col, leitura_col = st.columns([1.18, 0.82])
-                with painel_col:
-                    st.markdown("**Painel principal da estrategia**")
+                    st.markdown("**2. Painel visual**")
                     if not favorabilidade_orgaos.empty:
                         st.caption(
-                            f"Comparativo do sinal mais pro ou mais restritivo entre itens de {rotulo_comparativo.lower()} com base util classificada."
+                            f"Compare o sinal mais favoravel ou mais restritivo entre itens de {rotulo_comparativo.lower()}."
                         )
-                        if favorabilidade_minima_utilizada < 5:
-                            st.caption(
-                                f"Base reduzida para exibicao: minimo de {favorabilidade_minima_utilizada} decisoes uteis por item deste recorte."
-                            )
                         st.pyplot(
                             fig_favorabilidade_por_orgao(
                                 favorabilidade_orgaos.head(10),
@@ -5009,7 +4990,7 @@ def render() -> None:
                         )
                     elif not mix_orgaos_tema.empty and not bool(mix_profile_info.get("uniforme", False)):
                         st.caption(
-                            "Ainda nao ha base util suficiente para pro/contra, entao o painel mostra como os desfechos classificados se distribuem entre os recortes."
+                            "Como a base pro/contra ainda esta curta, o painel mostra a distribuicao dos desfechos classificados."
                         )
                         st.pyplot(
                             fig_desfechos_por_orgao(
@@ -5023,11 +5004,11 @@ def render() -> None:
                         desfecho_uniforme = str(mix_profile_info.get("desfecho_dominante", "")).strip()
                         if desfecho_uniforme:
                             st.caption(
-                                f"O padrao classificado ficou concentrado em `{desfecho_uniforme}`. Para evitar um grafico repetitivo, o painel destaca onde ha mais base classificada e melhor cobertura."
+                                f"O padrao ficou concentrado em `{desfecho_uniforme}`. Por isso, o painel destaca volume e cobertura."
                             )
                         else:
                             st.caption(
-                                "Como o padrao classificado ficou muito uniforme, o painel destaca volume e cobertura por recorte."
+                                "Como o padrao ficou uniforme, o painel destaca volume e cobertura por recorte."
                             )
                         st.pyplot(
                             fig_base_classificada_por_orgao(
@@ -5041,15 +5022,15 @@ def render() -> None:
                         st.info(
                             f"Ainda nao encontrei base suficiente para montar um painel comparativo por {rotulo_comparativo.lower()}."
                         )
-                with leitura_col:
+                with cuidado_col:
                     st.markdown("**Leitura rapida**")
                     st.markdown(f"- Base util: {base_util_estrategica}")
+                    st.markdown(f"- Recorte ativo: {rotulo_comparativo}")
                     st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
                     if total_classificados_tema > 0:
                         st.markdown(
                             f"- Neutro/processual: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
                         )
-                    st.markdown(f"- Recorte ativo: {rotulo_comparativo}")
                     if dimensao_comparativa != dimensao_recomendada and int(dimensao_recomendada_state.get("score", 0) or 0) > 0:
                         st.markdown(
                             f"- Recorte com mais sinal agora: {COMPARISON_DIMENSIONS[dimensao_recomendada]['label']}"
@@ -5071,25 +5052,68 @@ def render() -> None:
                     else:
                         st.markdown("- Ainda nao ha meses suficientes para medir mudanca de padrao.")
 
-                    st.markdown("**Pontos de atencao**")
+                    st.markdown("**Cuidado principal**")
                     if alertas_tema:
-                        for alerta in alertas_tema[:3]:
-                            st.markdown(f"- {alerta}")
-                        if len(alertas_tema) > 3:
-                            st.caption(f"Mostrando 3 de {len(alertas_tema)} alertas desta leitura.")
+                        st.warning(alertas_tema[0])
+                        if len(alertas_tema) > 1:
+                            st.caption(f"Ha mais {len(alertas_tema) - 1} alerta(s) nos detalhes abaixo.")
+                    elif estrategia_fraca:
+                        st.info(
+                            "A base ainda esta curta. Prefira cobertura, volume e estabilidade antes de concluir favorabilidade."
+                        )
                     else:
-                        st.success("Sem alertas metodologicos relevantes para esta leitura.")
+                        st.success("A leitura veio com base melhor para comparacao.")
 
-                with st.expander(f"Base e cobertura por {rotulo_comparativo.lower()}", expanded=False):
+                    if pode_reforcar_estrategia:
+                        st.markdown("**Se quiser destravar mais base**")
+                        if st.button(
+                            f"Reforcar leitura (ate {format_int_br(strategy_target_size)})",
+                            key=f"reforcar_estrategia_{tema_escolhido}",
+                            use_container_width=True,
+                        ):
+                            with st.spinner("Ampliando base estrategica deste tema..."):
+                                try:
+                                    df_decisao_reforcado, decision_size = fetch_strategy_decision_dataframe(
+                                        api_key=api_key,
+                                        query_context=last_query_context,
+                                        target_size=strategy_target_size,
+                                    )
+                                except DataJudRequestError as exc:
+                                    st.error(
+                                        "Nao consegui ampliar a base estrategica nesta tentativa. "
+                                        f"{exc}"
+                                    )
+                                except Exception as exc:
+                                    st.error(str(exc))
+                                else:
+                                    if df_decisao_reforcado.empty:
+                                        st.warning(
+                                            "A ampliacao foi executada, mas ainda nao voltou base estrategica suficiente para este filtro."
+                                        )
+                                    else:
+                                        replace_decision_state_in_session(
+                                            df_decisao_reforcado,
+                                            target_size=decision_size,
+                                            aviso=(
+                                                "Base estrategica ampliada sob demanda para melhorar comparativos de favorabilidade "
+                                                f"e tempo com ate {format_int_br(decision_size)} registros."
+                                            ),
+                                        )
+                                        st.success(
+                                            "Base estrategica atualizada. Mantive o tema selecionado para voce continuar daqui."
+                                        )
+                                        st.rerun()
+
+                with st.expander(f"Ver base por {rotulo_comparativo.lower()}", expanded=False):
                     if not orgaos_tema.empty:
                         st.caption(
-                            f"Esta tabela ajuda a entender volume, cobertura de desfecho e mediana de tempo no recorte ativo ({rotulo_comparativo.lower()})."
+                            f"Esta tabela ajuda a entender volume, cobertura e mediana de tempo no recorte ativo."
                         )
                         st.dataframe(orgaos_tema_view, use_container_width=True, height=320)
                     else:
                         st.info(f"Nao encontrei dados suficientes por {rotulo_comparativo.lower()} neste tema.")
 
-                with st.expander("Rankings comparativos", expanded=not favorabilidade_orgaos.empty):
+                with st.expander("Ver rankings comparativos", expanded=not favorabilidade_orgaos.empty):
                     col_rank1, col_rank2 = st.columns(2)
                     with col_rank1:
                         st.markdown(f"**{rotulo_comparativo} mais favoraveis**")
@@ -5108,7 +5132,7 @@ def render() -> None:
                                 f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais restritivos neste tema."
                             )
 
-                with st.expander("Tempo e estabilidade por recorte", expanded=not tempo_orgaos_plot.empty):
+                with st.expander("Ver tempo e estabilidade", expanded=not tempo_orgaos_plot.empty):
                     col_tempo_chart, col_tempo_table = st.columns(2)
                     with col_tempo_chart:
                         st.markdown(f"**Tempo mediano ate o desfecho por {eixo_comparativo.lower()}**")
