@@ -28,8 +28,9 @@ FAST_DECISION_SAMPLE_LIMIT = 250
 FAST_MAP_SAMPLE_LIMIT = 800
 STRATEGY_RELOAD_MIN_SIZE = 1200
 STRATEGY_RELOAD_MAX_SIZE = 3000
-THEME_SUGGESTION_SAMPLE_SIZE = 3000
+THEME_SUGGESTION_SAMPLE_SIZE = 800
 THEME_SUGGESTION_MAX_ITEMS = 500
+THEME_SUGGESTION_TIMEOUT_SECONDS = 18
 
 CODIGOS_TJM = [
     (11041, "Inquerito Policial Militar"),
@@ -717,6 +718,44 @@ def build_theme_suggestion_cache_key(
 def sync_tema_text_from_select() -> None:
     tema_escolhido = normalize_assunto_filtro(st.session_state.get("tema_consulta_select", ""))
     st.session_state["tema_consulta_text_fallback"] = tema_escolhido
+
+
+def current_query_can_seed_theme_suggestions(
+    classe_codigo: Any,
+    tribunal_sigla: str,
+    estrutura_filtro: str,
+    data_inicio: Any = None,
+    data_fim: Any = None,
+) -> bool:
+    query_context = dict(st.session_state.get("last_query_context", {}))
+    df_anpp = st.session_state.get("df_anpp", pd.DataFrame())
+    if not isinstance(df_anpp, pd.DataFrame) or df_anpp.empty:
+        return False
+    if not isinstance(query_context, dict):
+        return False
+    if bool(query_context.get("usar_numero_processo", False)):
+        return False
+    if normalize_assunto_filtro(query_context.get("tema_consulta", "")):
+        return False
+    if int(query_context.get("classe_codigo", 0) or 0) != int(classe_codigo or 0):
+        return False
+    if normalize_tribunal_sigla(query_context.get("tribunal_sigla", "")) != normalize_tribunal_sigla(tribunal_sigla):
+        return False
+    if str(query_context.get("estrutura_filtro", "Todos")) != str(estrutura_filtro or "Todos"):
+        return False
+    periodo_contexto = format_periodo_aplicado(
+        query_context.get("data_inicio_consulta"),
+        query_context.get("data_fim_consulta"),
+    )
+    periodo_atual = format_periodo_aplicado(data_inicio, data_fim)
+    return periodo_contexto == periodo_atual
+
+
+def build_theme_suggestions_from_current_query(max_items: int = THEME_SUGGESTION_MAX_ITEMS) -> pd.DataFrame:
+    df_anpp = st.session_state.get("df_anpp", pd.DataFrame())
+    if not isinstance(df_anpp, pd.DataFrame) or df_anpp.empty:
+        return pd.DataFrame(columns=["assunto", "quantidade"])
+    return assuntos_distintos_dataframe(df_anpp).head(max_items).reset_index(drop=True)
 
 
 def coerce_date_value(value: Any) -> Any:
@@ -2194,6 +2233,7 @@ def post_datajud_with_retry(
     numero_processo: str = "",
     data_inicio: Any = None,
     data_fim: Any = None,
+    timeout_seconds: int = DATAJUD_TIMEOUT_SECONDS,
 ) -> requests.Response:
     last_error: Exception | None = None
     for tentativa in range(DATAJUD_MAX_RETRIES + 1):
@@ -2202,7 +2242,7 @@ def post_datajud_with_retry(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=DATAJUD_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
             if response.status_code in DATAJUD_RETRYABLE_STATUS and tentativa < DATAJUD_MAX_RETRIES:
                 time.sleep(1.2 * (tentativa + 1))
@@ -2281,6 +2321,7 @@ def fetch_hits(
     incluir_movimentos: bool = False,
     modo_consulta: str = "classe_ou_processo",
     source_fields: list[str] | None = None,
+    timeout_seconds: int = DATAJUD_TIMEOUT_SECONDS,
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
     assunto_limpo = normalize_assunto_filtro(assunto_nome)
@@ -2338,6 +2379,7 @@ def fetch_hits(
             numero_processo=numero_limpo,
             data_inicio=data_inicio,
             data_fim=data_fim,
+            timeout_seconds=timeout_seconds,
         )
         data = response.json()
         return data.get("hits", {}).get("hits", [])
@@ -2366,6 +2408,7 @@ def fetch_hits(
             numero_processo=numero_limpo,
             data_inicio=data_inicio,
             data_fim=data_fim,
+            timeout_seconds=timeout_seconds,
         )
         data = response.json()
         page_hits = data.get("hits", {}).get("hits", [])
@@ -3075,6 +3118,7 @@ def fetch_theme_suggestions_dataframe(
     data_fim: Any = None,
     sample_size: int = THEME_SUGGESTION_SAMPLE_SIZE,
     max_items: int = THEME_SUGGESTION_MAX_ITEMS,
+    timeout_seconds: int = THEME_SUGGESTION_TIMEOUT_SECONDS,
 ) -> pd.DataFrame:
     hits = fetch_hits(
         api_key=api_key,
@@ -3087,6 +3131,7 @@ def fetch_theme_suggestions_dataframe(
         data_fim=data_fim,
         incluir_movimentos=False,
         modo_consulta="classe_ou_processo",
+        timeout_seconds=timeout_seconds,
         source_fields=[
             "orgaoJulgador.nome",
             "grau",
@@ -3852,6 +3897,21 @@ def render() -> None:
                 key="carregar_temas_codigo_sigla",
                 use_container_width=True,
             ):
+                temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
+                if current_query_can_seed_theme_suggestions(
+                    classe_codigo=classe_codigo,
+                    tribunal_sigla=tribunal_sigla,
+                    estrutura_filtro=estrutura_filtro,
+                    data_inicio=data_inicio if aplicar_periodo else None,
+                    data_fim=data_fim if aplicar_periodo else None,
+                ):
+                    temas_da_consulta_atual = build_theme_suggestions_from_current_query()
+                if not temas_da_consulta_atual.empty:
+                    st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
+                    st.session_state[tema_sugestoes_status_key] = (
+                        f"Lista de temas montada a partir da consulta atual, com {format_int_br(len(temas_da_consulta_atual))} opcoes."
+                    )
+                    st.rerun()
                 with st.spinner("Carregando temas sugeridos..."):
                     try:
                         tema_sugestoes_df = fetch_theme_suggestions_dataframe(
@@ -3865,7 +3925,7 @@ def render() -> None:
                         )
                     except DataJudRequestError:
                         tema_sugestoes_erro = (
-                            "Nao consegui carregar a lista de temas agora. "
+                            "Os temas sugeridos demoraram demais para carregar no DataJud. "
                             "Voce ainda pode digitar o tema manualmente."
                         )
                         st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
