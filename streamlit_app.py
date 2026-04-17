@@ -2631,6 +2631,17 @@ def format_int_br(value: Any) -> str:
         return str(value)
 
 
+def shorten_display_label(value: Any, max_chars: int = 36) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) <= max_chars:
+        return text
+
+    truncated = text[:max_chars].rsplit(" ", 1)[0].strip()
+    if len(truncated) < max_chars // 2:
+        truncated = text[:max_chars].strip()
+    return f"{truncated}..."
+
+
 def format_duration_label(value_in_days: Any) -> str:
     try:
         valor = float(value_in_days)
@@ -2820,6 +2831,7 @@ def build_query_derived_state(
     top_100_df = top_100_to_dataframe(top_100)
     top_orgaos_df = top_orgaos_julgadores_dataframe(df_anpp)
     top_comarcas_df = top_comarcas_dataframe(df_anpp)
+    top_classes_df = top_classes_display_dataframe(df_anpp)
     assuntos_distintos = assuntos_distintos_dataframe(df_anpp)
     sample_insights = build_sample_insights(df_anpp, df_mensal, top_orgaos_df, top_100_df)
     map_insights = build_map_insights(top_codigos, top_orgaos_sigla, top_assuntos, qtd_mapa)
@@ -2844,6 +2856,7 @@ def build_query_derived_state(
         "top_100_df": top_100_df,
         "top_orgaos_df": top_orgaos_df,
         "top_comarcas_df": top_comarcas_df,
+        "top_classes_df": top_classes_df,
         "sample_insights": sample_insights,
         "map_insights": map_insights,
         "assuntos_distintos": assuntos_distintos,
@@ -3139,6 +3152,21 @@ def top_classes_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.Data
         return pd.DataFrame(columns=["classe", "quantidade"])
 
     return classes.value_counts().head(max_items).rename_axis("classe").reset_index(name="quantidade")
+
+
+def top_classes_display_dataframe(
+    df_anpp: pd.DataFrame,
+    max_items: int = 10,
+    max_chars: int = 38,
+) -> pd.DataFrame:
+    top_classes = top_classes_dataframe(df_anpp, max_items=max_items).copy()
+    if top_classes.empty:
+        return pd.DataFrame(columns=["classe", "quantidade"])
+
+    top_classes["classe"] = top_classes["classe"].map(
+        lambda classe: shorten_display_label(classe, max_chars=max_chars)
+    )
+    return top_classes
 
 
 def top_assuntos_dataframe(df_anpp: pd.DataFrame, max_items: int = 10) -> pd.DataFrame:
@@ -4372,6 +4400,7 @@ def render() -> None:
         "top_100_df",
         "top_orgaos_df",
         "top_comarcas_df",
+        "top_classes_df",
         "sample_insights",
         "map_insights",
         "assuntos_distintos",
@@ -4394,7 +4423,7 @@ def render() -> None:
     df_view = derived_state["df_view"]
     top_100_df = derived_state["top_100_df"]
     top_orgaos_df = derived_state["top_orgaos_df"]
-    top_comarcas_df = derived_state.get("top_comarcas_df", top_comarcas_dataframe(df_anpp))
+    top_classes_df = derived_state.get("top_classes_df", top_classes_display_dataframe(df_anpp))
     sample_insights = derived_state["sample_insights"]
     map_insights = derived_state["map_insights"]
     tema_insights: list[str] = []
@@ -5304,12 +5333,12 @@ def render() -> None:
         st.caption("Mostra em quais horas houve mais ajuizamentos na amostra consultada.")
         st.pyplot(fig_horario(df_anpp), clear_figure=True)
     with col_b:
-        st.subheader("Top 10 municipios/comarcas")
-        st.caption("Mostra onde a amostra mais se concentra por municipio ou comarca, com a participacao de cada item no total consultado.")
-        if isinstance(top_comarcas_df, pd.DataFrame) and not top_comarcas_df.empty:
-            st.dataframe(top_comarcas_df, use_container_width=True, height=320)
+        st.subheader("Classes com mais processos")
+        st.caption("Mostra as classes processuais mais frequentes na amostra. Nomes longos aparecem resumidos para facilitar a leitura.")
+        if isinstance(top_classes_df, pd.DataFrame) and not top_classes_df.empty:
+            st.dataframe(top_classes_df, use_container_width=True, height=320)
         else:
-            st.info("Sem base suficiente para ranquear municipios/comarcas nesta amostra.")
+            st.info("Sem classes suficientes para montar esse ranking na amostra atual.")
 
     st.subheader("Ajuizamentos mensais")
     st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
