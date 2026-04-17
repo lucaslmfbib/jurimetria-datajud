@@ -4524,12 +4524,43 @@ def render() -> None:
                     )
             with tema_tabs[3]:
                 st.caption(
-                    "Estas metricas ajudam na estrategia, mas funcionam como proxy automatica. Use junto da leitura juridica do tema e do orgao."
+                    "Aqui o app tenta transformar a leitura do tema em sinais praticos. Quando a base estiver curta, ele prioriza cobertura, volume e consistencia antes de sugerir favorabilidade."
                 )
+                decisoes_uteis_tema = int(favorabilidade_tema.get("decisoes_uteis", 0) or 0)
+                total_classificados_tema = int(favorabilidade_tema.get("total_classificados", 0) or 0)
+                base_util_estrategica = (
+                    f"{format_int_br(decisoes_uteis_tema)} uteis / {format_int_br(total_classificados_tema)} classificadas"
+                    if total_classificados_tema > 0
+                    else "Sem base"
+                )
+                tempo_valores_plot = (
+                    pd.to_numeric(tempo_orgaos_plot["mediana_dias"], errors="coerce").dropna()
+                    if not tempo_orgaos_plot.empty and "mediana_dias" in tempo_orgaos_plot.columns
+                    else pd.Series(dtype="float64")
+                )
+                max_tempo_dias = float(tempo_valores_plot.max()) if not tempo_valores_plot.empty else None
+                if max_tempo_dias is None:
+                    leitura_tempo_label = "Sem base"
+                elif max_tempo_dias <= 0:
+                    leitura_tempo_label = "Mesmo dia"
+                elif max_tempo_dias < 1:
+                    leitura_tempo_label = "Em horas"
+                else:
+                    leitura_tempo_label = "Em dias"
+
+                if not favorabilidade_orgaos.empty:
+                    painel_principal_label = "Favorabilidade"
+                elif not mix_orgaos_tema.empty and not bool(mix_profile_info.get("uniforme", False)):
+                    painel_principal_label = "Composicao"
+                elif not orgaos_tema.empty:
+                    painel_principal_label = "Base classificada"
+                else:
+                    painel_principal_label = "Sem base"
+
                 estrategia_fraca = (
                     favorabilidade_orgaos.empty
                     or tempo_orgaos.empty
-                    or int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) < 10
+                    or decisoes_uteis_tema < 10
                 )
                 strategy_target_size = strategy_reload_target_size(
                     last_query_context.get("query_size", 0),
@@ -4543,57 +4574,73 @@ def render() -> None:
                     and not bool(last_query_context.get("usar_numero_processo", False))
                     and strategy_target_size > max(qtd_decisao, 0)
                 )
-                if estrategia_fraca and pode_reforcar_estrategia:
-                    st.warning(
-                        "A base estrategica deste tema ainda veio curta. Se voce quiser, o app pode buscar mais movimentos para tentar destravar os rankings e o comparativo de tempo."
-                    )
-                    if st.button(
-                        f"Reforcar base estrategica (ate {format_int_br(strategy_target_size)} registros com movimentos)",
-                        key=f"reforcar_estrategia_{tema_escolhido}",
-                    ):
-                        with st.spinner("Ampliando base estrategica deste tema..."):
-                            try:
-                                df_decisao_reforcado, decision_size = fetch_strategy_decision_dataframe(
-                                    api_key=api_key,
-                                    query_context=last_query_context,
-                                    target_size=strategy_target_size,
-                                )
-                            except DataJudRequestError as exc:
-                                st.error(
-                                    "Nao consegui ampliar a base estrategica nesta tentativa. "
-                                    f"{exc}"
-                                )
-                            except Exception as exc:
-                                st.error(str(exc))
-                            else:
-                                if df_decisao_reforcado.empty:
-                                    st.warning(
-                                        "A ampliacao foi executada, mas ainda nao voltou base estrategica suficiente para este filtro."
-                                    )
-                                else:
-                                    replace_decision_state_in_session(
-                                        df_decisao_reforcado,
-                                        target_size=decision_size,
-                                        aviso=(
-                                            "Base estrategica ampliada sob demanda para melhorar comparativos de favorabilidade "
-                                            f"e tempo com ate {format_int_br(decision_size)} registros."
-                                        ),
-                                    )
-                                    st.success(
-                                        "Base estrategica atualizada. Mantive o tema selecionado para voce continuar daqui."
-                                    )
-                                    st.rerun()
-                col_estrat1, col_estrat2 = st.columns([1.15, 0.85])
-                with col_estrat1:
-                    st.markdown(f"**Indice de favorabilidade por {eixo_comparativo.lower()}**")
-                    st.caption(
-                        f"Compara quais itens de {rotulo_comparativo.lower()} parecem mais receptivos ou mais restritivos para o tema, com base nas decisoes classificadas."
-                    )
-                    if not favorabilidade_orgaos.empty and favorabilidade_minima_utilizada < 5:
-                        st.caption(
-                            f"Base reduzida para exibicao do grafico: minimo de {favorabilidade_minima_utilizada} decisoes uteis por item de {rotulo_comparativo.lower()}."
+
+                s1, s2, s3, s4 = st.columns(4)
+                render_theme_metric_card(s1, "Base util estrategica", base_util_estrategica)
+                render_theme_metric_card(s2, "Recorte ativo", rotulo_comparativo)
+                render_theme_metric_card(s3, "Painel principal", painel_principal_label)
+                render_theme_metric_card(s4, "Leitura de tempo", leitura_tempo_label)
+
+                if estrategia_fraca:
+                    if pode_reforcar_estrategia:
+                        aviso_col, acao_col = st.columns([1.6, 1.0])
+                    else:
+                        aviso_col, acao_col = st.columns([1.0, 1.0])
+                    with aviso_col:
+                        st.info(
+                            "A leitura estrategica deste tema ainda esta sensivel a base curta. Quando isso acontecer, prefira usar cobertura, estabilidade e concentracao do recorte antes de concluir favorabilidade."
                         )
+                    if pode_reforcar_estrategia:
+                        with acao_col:
+                            if st.button(
+                                f"Reforcar base estrategica (ate {format_int_br(strategy_target_size)})",
+                                key=f"reforcar_estrategia_{tema_escolhido}",
+                                use_container_width=True,
+                            ):
+                                with st.spinner("Ampliando base estrategica deste tema..."):
+                                    try:
+                                        df_decisao_reforcado, decision_size = fetch_strategy_decision_dataframe(
+                                            api_key=api_key,
+                                            query_context=last_query_context,
+                                            target_size=strategy_target_size,
+                                        )
+                                    except DataJudRequestError as exc:
+                                        st.error(
+                                            "Nao consegui ampliar a base estrategica nesta tentativa. "
+                                            f"{exc}"
+                                        )
+                                    except Exception as exc:
+                                        st.error(str(exc))
+                                    else:
+                                        if df_decisao_reforcado.empty:
+                                            st.warning(
+                                                "A ampliacao foi executada, mas ainda nao voltou base estrategica suficiente para este filtro."
+                                            )
+                                        else:
+                                            replace_decision_state_in_session(
+                                                df_decisao_reforcado,
+                                                target_size=decision_size,
+                                                aviso=(
+                                                    "Base estrategica ampliada sob demanda para melhorar comparativos de favorabilidade "
+                                                    f"e tempo com ate {format_int_br(decision_size)} registros."
+                                                ),
+                                            )
+                                            st.success(
+                                                "Base estrategica atualizada. Mantive o tema selecionado para voce continuar daqui."
+                                            )
+                                            st.rerun()
+
+                painel_col, leitura_col = st.columns([1.18, 0.82])
+                with painel_col:
+                    st.markdown("**Painel principal da estrategia**")
                     if not favorabilidade_orgaos.empty:
+                        st.caption(
+                            f"Comparativo do sinal mais pro ou mais restritivo entre itens de {rotulo_comparativo.lower()} com base util classificada."
+                        )
+                        if favorabilidade_minima_utilizada < 5:
+                            st.caption(
+                                f"Base reduzida para exibicao: minimo de {favorabilidade_minima_utilizada} decisoes uteis por item deste recorte."
+                            )
                         st.pyplot(
                             fig_favorabilidade_por_orgao(
                                 favorabilidade_orgaos.head(10),
@@ -4602,71 +4649,55 @@ def render() -> None:
                             ),
                             clear_figure=True,
                         )
-                    elif not mix_orgaos_tema.empty:
-                        if bool(mix_profile_info.get("uniforme", False)):
-                            desfecho_uniforme = str(mix_profile_info.get("desfecho_dominante", "")).strip()
-                            if desfecho_uniforme:
-                                st.caption(
-                                    f"Como todos os itens relevantes ficaram concentrados em `{desfecho_uniforme}`, o app troca o grafico de favorabilidade por um comparativo da base classificada de cada recorte."
-                                )
-                            else:
-                                st.caption(
-                                    "Como o padrao classificado ficou praticamente igual entre os recortes, o app troca o grafico de favorabilidade por um comparativo da base classificada."
-                                )
-                            st.pyplot(
-                                fig_base_classificada_por_orgao(
-                                    orgaos_tema,
-                                    titulo=f"Base classificada por {eixo_comparativo.lower()}",
-                                    eixo_label=eixo_comparativo,
-                                ),
-                                clear_figure=True,
+                    elif not mix_orgaos_tema.empty and not bool(mix_profile_info.get("uniforme", False)):
+                        st.caption(
+                            "Ainda nao ha base util suficiente para pro/contra, entao o painel mostra como os desfechos classificados se distribuem entre os recortes."
+                        )
+                        st.pyplot(
+                            fig_desfechos_por_orgao(
+                                mix_orgaos_tema.head(10),
+                                titulo=f"Composicao dos desfechos por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
+                        )
+                    elif not orgaos_tema.empty:
+                        desfecho_uniforme = str(mix_profile_info.get("desfecho_dominante", "")).strip()
+                        if desfecho_uniforme:
+                            st.caption(
+                                f"O padrao classificado ficou concentrado em `{desfecho_uniforme}`. Para evitar um grafico repetitivo, o painel destaca onde ha mais base classificada e melhor cobertura."
                             )
                         else:
                             st.caption(
-                                "Como ainda nao ha base util pro/contra suficiente, o app mostra abaixo a composicao dos desfechos classificados por recorte."
+                                "Como o padrao classificado ficou muito uniforme, o painel destaca volume e cobertura por recorte."
                             )
-                            st.pyplot(
-                                fig_desfechos_por_orgao(
-                                    mix_orgaos_tema.head(10),
-                                    titulo=f"Composicao dos desfechos por {eixo_comparativo.lower()}",
-                                    eixo_label=eixo_comparativo,
-                                ),
-                                clear_figure=True,
-                            )
+                        st.pyplot(
+                            fig_base_classificada_por_orgao(
+                                orgaos_tema,
+                                titulo=f"Base classificada por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
+                        )
                     else:
                         st.info(
-                            f"Ainda nao encontrei desfechos classificados suficientes para montar um comparativo por {rotulo_comparativo.lower()}."
+                            f"Ainda nao encontrei base suficiente para montar um painel comparativo por {rotulo_comparativo.lower()}."
                         )
-                with col_estrat2:
-                    st.markdown("**Favorabilidade do tema**")
-                    if int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) > 0:
-                        st.markdown(
-                            f"- Favoravel estimado: {favorabilidade_tema['favoravel_pct']:.1f}%"
-                        )
-                        st.markdown(
-                            f"- Desfavoravel estimado: {favorabilidade_tema['desfavoravel_pct']:.1f}%"
-                        )
-                        st.markdown(
-                            f"- Misto/parcial: {favorabilidade_tema['misto_pct']:.1f}%"
-                        )
-                        st.markdown(
-                            f"- Neutro/processual fora do indice: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
-                        )
-                    elif int(favorabilidade_tema.get("total_classificados", 0) or 0) > 0:
-                        st.markdown(
-                            f"- Desfechos classificados totais: {format_int_br(favorabilidade_tema['total_classificados'])}"
-                        )
-                        st.markdown("- Decisoes uteis pro/contra/mistas: 0")
+                with leitura_col:
+                    st.markdown("**Leitura rapida**")
+                    st.markdown(f"- Base util: {base_util_estrategica}")
+                    st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
+                    if total_classificados_tema > 0:
                         st.markdown(
                             f"- Neutro/processual: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
                         )
-                        st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
-                        st.info(
-                            "Neste tema, os movimentos classificados ainda sao majoritariamente neutros ou processuais, entao o indice de favorabilidade fica sem base suficiente."
+                    st.markdown(f"- Recorte ativo: {rotulo_comparativo}")
+                    if dimensao_comparativa != dimensao_recomendada and int(dimensao_recomendada_state.get("score", 0) or 0) > 0:
+                        st.markdown(
+                            f"- Recorte com mais sinal agora: {COMPARISON_DIMENSIONS[dimensao_recomendada]['label']}"
                         )
-                    else:
-                        st.info("Ainda nao ha massa critica de desfechos uteis para medir favorabilidade do tema.")
-                    st.markdown("**Mudanca recente do padrao**")
+
+                    st.markdown("**Mudanca recente**")
                     if int(mudanca_padrao.get("janela_meses", 0) or 0) > 0:
                         st.markdown(f"- Leitura principal: {mudanca_label}")
                         st.markdown(
@@ -4675,94 +4706,93 @@ def render() -> None:
                         st.markdown(
                             f"- Janela anterior: {', '.join(mudanca_padrao.get('meses_anteriores', [])) or 'sem base'}"
                         )
-                        if mudanca_padrao.get("desfecho_lider_recente"):
-                            st.markdown(
-                                f"- Desfecho lider recente: {mudanca_padrao['desfecho_lider_recente']}"
-                            )
-                        if mudanca_padrao.get("desfecho_lider_anterior"):
-                            st.markdown(
-                                f"- Desfecho lider anterior: {mudanca_padrao['desfecho_lider_anterior']}"
-                            )
                         if mudanca_padrao.get("delta_indice") is not None:
                             st.markdown(
-                                f"- Variacao do indice de favorabilidade: {float(mudanca_padrao['delta_indice']):+.1f}"
+                                f"- Variacao do indice: {float(mudanca_padrao['delta_indice']):+.1f}"
                             )
                     else:
-                        st.info("Ainda nao ha meses suficientes com decisao classificada para medir mudanca recente do padrao.")
-                    st.markdown("**Alertas de leitura**")
+                        st.markdown("- Ainda nao ha meses suficientes para medir mudanca de padrao.")
+
+                    st.markdown("**Pontos de atencao**")
                     if alertas_tema:
-                        for alerta in alertas_tema:
+                        for alerta in alertas_tema[:3]:
                             st.markdown(f"- {alerta}")
+                        if len(alertas_tema) > 3:
+                            st.caption(f"Mostrando 3 de {len(alertas_tema)} alertas desta leitura.")
                     else:
-                        st.success("A leitura deste tema nao ativou alertas metodologicos importantes.")
-                col_rank1, col_rank2 = st.columns(2)
-                with col_rank1:
-                    st.markdown(f"**{rotulo_comparativo} mais favoraveis**")
-                    st.caption(
-                        f"Ranking com base no indice de favorabilidade estimada, considerando apenas itens de {rotulo_comparativo.lower()} com base util minima."
-                    )
-                    if not ranking_favoraveis.empty:
-                        st.dataframe(ranking_favoraveis_view, use_container_width=True, height=260)
-                    else:
-                        st.info(f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais favoraveis neste tema.")
-                with col_rank2:
-                    st.markdown(f"**{rotulo_comparativo} mais restritivos**")
-                    st.caption(
-                        f"Mostra os itens de {rotulo_comparativo.lower()} cujo sinal estimado foi mais desfavoravel no tema, respeitando base minima."
-                    )
-                    if not ranking_restritivos.empty:
-                        st.dataframe(ranking_restritivos_view, use_container_width=True, height=260)
-                    else:
-                        st.info(f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais restritivos neste tema.")
-                col_tempo_chart, col_tempo_table = st.columns(2)
-                with col_tempo_chart:
-                    st.markdown(f"**Tempo mediano ate o desfecho por {eixo_comparativo.lower()}**")
-                    st.caption(
-                        f"Mostra quais itens de {rotulo_comparativo.lower()} tendem a decidir mais rapido ou mais devagar dentro do tema."
-                    )
-                    if not tempo_orgaos.empty and tempo_minimo_utilizado < 3:
+                        st.success("Sem alertas metodologicos relevantes para esta leitura.")
+
+                with st.expander(f"Base e cobertura por {rotulo_comparativo.lower()}", expanded=False):
+                    if not orgaos_tema.empty:
                         st.caption(
-                            f"Base reduzida para exibicao do grafico: minimo de {tempo_minimo_utilizado} processo(s) com tempo por item de {rotulo_comparativo.lower()}."
+                            f"Esta tabela ajuda a entender volume, cobertura de desfecho e mediana de tempo no recorte ativo ({rotulo_comparativo.lower()})."
                         )
-                    if tempo_orgaos.empty and not tempo_orgaos_fallback.empty:
-                        st.caption(
-                            "Leitura exploratoria: usei a mediana de tempo disponivel no resumo por recorte, mesmo sem massa suficiente para o comparativo completo."
+                        st.dataframe(orgaos_tema_view, use_container_width=True, height=320)
+                    else:
+                        st.info(f"Nao encontrei dados suficientes por {rotulo_comparativo.lower()} neste tema.")
+
+                with st.expander("Rankings comparativos", expanded=not favorabilidade_orgaos.empty):
+                    col_rank1, col_rank2 = st.columns(2)
+                    with col_rank1:
+                        st.markdown(f"**{rotulo_comparativo} mais favoraveis**")
+                        if not ranking_favoraveis.empty:
+                            st.dataframe(ranking_favoraveis_view, use_container_width=True, height=260)
+                        else:
+                            st.info(
+                                f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais favoraveis neste tema."
+                            )
+                    with col_rank2:
+                        st.markdown(f"**{rotulo_comparativo} mais restritivos**")
+                        if not ranking_restritivos.empty:
+                            st.dataframe(ranking_restritivos_view, use_container_width=True, height=260)
+                        else:
+                            st.info(
+                                f"Sem base suficiente para ranquear {rotulo_comparativo.lower()} mais restritivos neste tema."
+                            )
+
+                with st.expander("Tempo e estabilidade por recorte", expanded=not tempo_orgaos_plot.empty):
+                    col_tempo_chart, col_tempo_table = st.columns(2)
+                    with col_tempo_chart:
+                        st.markdown(f"**Tempo mediano ate o desfecho por {eixo_comparativo.lower()}**")
+                        if not tempo_orgaos.empty and tempo_minimo_utilizado < 3:
+                            st.caption(
+                                f"Base reduzida para exibicao: minimo de {tempo_minimo_utilizado} processo(s) com tempo por item deste recorte."
+                            )
+                        if tempo_orgaos.empty and not tempo_orgaos_fallback.empty:
+                            st.caption(
+                                "Leitura exploratoria: usei a mediana de tempo disponivel no resumo por recorte, mesmo sem massa suficiente para o comparativo completo."
+                            )
+                        if max_tempo_dias is not None:
+                            if max_tempo_dias <= 0:
+                                st.caption(
+                                    "Nesta amostra, os movimentos classificados caem no mesmo dia do ajuizamento, entao o comparativo de tempo fica pouco informativo."
+                                )
+                            elif max_tempo_dias < 1:
+                                st.caption(
+                                    "Os tempos medianos deste tema ficaram abaixo de 1 dia. O grafico converte automaticamente para horas para evitar zeros aparentes."
+                                )
+                        st.pyplot(
+                            fig_tempo_por_orgao(
+                                tempo_orgaos_plot.head(10),
+                                titulo=f"Tempo mediano por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
                         )
-                    tempo_valores_plot = pd.to_numeric(
-                        tempo_orgaos_plot["mediana_dias"],
-                        errors="coerce",
-                    ).dropna() if not tempo_orgaos_plot.empty and "mediana_dias" in tempo_orgaos_plot.columns else pd.Series(dtype="float64")
-                    if not tempo_valores_plot.empty:
-                        max_tempo_dias = float(tempo_valores_plot.max())
-                        if max_tempo_dias <= 0:
-                            st.caption(
-                                "Nesta amostra, os movimentos classificados caem no mesmo dia do ajuizamento, então o comparativo de tempo fica pouco informativo."
+                        if not tempo_orgaos_plot.empty:
+                            st.dataframe(tempo_orgaos_plot_view.head(12), use_container_width=True, height=260)
+                        else:
+                            st.info(
+                                f"Sem base suficiente para comparar tempo mediano por {rotulo_comparativo.lower()}."
                             )
-                        elif max_tempo_dias < 1:
-                            st.caption(
-                                "Os tempos medianos deste tema ficaram abaixo de 1 dia. O grafico converte automaticamente para horas para evitar zeros aparentes."
+                    with col_tempo_table:
+                        st.markdown(f"**Estabilidade decisoria por {eixo_comparativo.lower()}**")
+                        if not estabilidade_orgaos.empty:
+                            st.dataframe(estabilidade_orgaos_view.head(12), use_container_width=True, height=320)
+                        else:
+                            st.info(
+                                f"Sem base suficiente para medir estabilidade decisoria por {rotulo_comparativo.lower()}."
                             )
-                    st.pyplot(
-                        fig_tempo_por_orgao(
-                            tempo_orgaos_plot.head(10),
-                            titulo=f"Tempo mediano por {eixo_comparativo.lower()}",
-                            eixo_label=eixo_comparativo,
-                        ),
-                        clear_figure=True,
-                    )
-                    if not tempo_orgaos_plot.empty:
-                        st.dataframe(tempo_orgaos_plot_view.head(12), use_container_width=True, height=260)
-                    else:
-                        st.info(f"Sem base suficiente para comparar tempo mediano por {rotulo_comparativo.lower()}.")
-                with col_tempo_table:
-                    st.markdown(f"**Estabilidade decisoria por {eixo_comparativo.lower()}**")
-                    st.caption(
-                        f"Mostra se cada item de {rotulo_comparativo.lower()} repete mais o mesmo desfecho ou oscila entre sinais diferentes."
-                    )
-                    if not estabilidade_orgaos.empty:
-                        st.dataframe(estabilidade_orgaos_view.head(12), use_container_width=True, height=320)
-                    else:
-                        st.info(f"Sem base suficiente para medir estabilidade decisoria por {rotulo_comparativo.lower()}.")
             with tema_tabs[4]:
                 col_classes, col_relacionados = st.columns(2)
                 with col_classes:
