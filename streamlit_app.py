@@ -4587,6 +4587,9 @@ def render() -> None:
         if tema_opcoes:
             tema_options = ["Todos os temas"] + tema_opcoes
             tema_select_key = "tema_para_analisar"
+            tema_focado_automaticamente = bool(
+                tema_consulta_aplicado and tema_consulta_aplicado in tema_options
+            )
             tema_prefill = (
                 tema_consulta_aplicado
                 if tema_consulta_aplicado and tema_consulta_aplicado in tema_options
@@ -4601,12 +4604,23 @@ def render() -> None:
                 st.session_state[tema_select_key] = tema_prefill
             elif st.session_state.get(tema_select_key) not in tema_options:
                 st.session_state[tema_select_key] = tema_prefill
-            tema_escolhido = st.selectbox(
-                "Tema para analisar",
-                options=tema_options,
-                key=tema_select_key,
-                help="Escolha um tema especifico ou volte para a visao geral de todos os temas.",
-            )
+            if tema_focado_automaticamente:
+                st.markdown(f"**Tema analisado agora:** `{st.session_state.get(tema_select_key, tema_prefill)}`")
+                with st.expander("Trocar tema da leitura", expanded=False):
+                    st.selectbox(
+                        "Escolher outro tema (opcional)",
+                        options=tema_options,
+                        key=tema_select_key,
+                        help="Se quiser, troque para outro tema ou volte para a visao geral.",
+                    )
+                tema_escolhido = str(st.session_state.get(tema_select_key, tema_prefill))
+            else:
+                tema_escolhido = st.selectbox(
+                    "Tema para analisar",
+                    options=tema_options,
+                    key=tema_select_key,
+                    help="Escolha um tema especifico ou volte para a visao geral de todos os temas.",
+                )
         else:
             tema_escolhido = ""
 
