@@ -4587,8 +4587,20 @@ def render() -> None:
         if tema_opcoes:
             tema_options = ["Todos os temas"] + tema_opcoes
             tema_select_key = "tema_para_analisar"
-            if st.session_state.get(tema_select_key) not in tema_options:
-                st.session_state[tema_select_key] = "Todos os temas"
+            tema_prefill = (
+                tema_consulta_aplicado
+                if tema_consulta_aplicado and tema_consulta_aplicado in tema_options
+                else "Todos os temas"
+            )
+            tema_query_signature = (
+                f"{tema_consulta_aplicado}|{qtd_decisao}|{len(tema_opcoes)}|"
+                f"{int(bool(busca_tema_direto))}"
+            )
+            if st.session_state.get("tema_query_signature") != tema_query_signature:
+                st.session_state["tema_query_signature"] = tema_query_signature
+                st.session_state[tema_select_key] = tema_prefill
+            elif st.session_state.get(tema_select_key) not in tema_options:
+                st.session_state[tema_select_key] = tema_prefill
             tema_escolhido = st.selectbox(
                 "Tema para analisar",
                 options=tema_options,
@@ -4610,6 +4622,17 @@ def render() -> None:
             st.markdown("**Visao geral dos temas da amostra**")
             st.dataframe(temas_overview, use_container_width=True, height=360)
         elif tema_escolhido:
+            if tema_consulta_aplicado and tema_escolhido == tema_consulta_aplicado:
+                st.success(
+                    f"Analise principal focada no tema pesquisado: `{tema_escolhido}`. "
+                    "A visao geral dos outros temas continua disponivel logo abaixo como apoio."
+                )
+            if not temas_overview.empty:
+                with st.expander("Ver visao geral dos temas da amostra", expanded=False):
+                    st.caption(
+                        "Use este quadro como contexto. A leitura principal desta consulta continua focada no tema selecionado acima."
+                    )
+                    st.dataframe(temas_overview, use_container_width=True, height=320)
             df_tema_decisao = filter_dataframe_by_tema(df_decisao, tema_escolhido)
             desfechos_tema = decision_outcomes_dataframe(df_tema_decisao)
             movimentos_tema = decision_movements_dataframe(df_tema_decisao)
