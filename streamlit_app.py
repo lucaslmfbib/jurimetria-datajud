@@ -3938,10 +3938,14 @@ def render() -> None:
 
         tema_opcoes = temas_decisao["assunto"].tolist()
         if tema_opcoes:
+            tema_options = ["Todos os temas"] + tema_opcoes
+            tema_select_key = "tema_para_analisar"
+            if st.session_state.get(tema_select_key) not in tema_options:
+                st.session_state[tema_select_key] = "Todos os temas"
             tema_escolhido = st.selectbox(
                 "Tema para analisar",
-                options=["Todos os temas"] + tema_opcoes,
-                index=0,
+                options=tema_options,
+                key=tema_select_key,
                 help="Escolha um tema especifico ou volte para a visao geral de todos os temas.",
             )
         else:
@@ -4119,6 +4123,21 @@ def render() -> None:
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
             estabilidade_orgaos_view = estabilidade_orgaos.rename(
+                columns={"orgao_julgador": coluna_tabela_comparativa}
+            )
+            tempo_orgaos_fallback = pd.DataFrame(columns=["orgao_julgador", "processos_com_tempo", "mediana_dias", "p75_dias"])
+            if tempo_orgaos.empty and not orgaos_tema.empty and "mediana_dias" in orgaos_tema.columns:
+                tempo_orgaos_fallback = (
+                    orgaos_tema[["orgao_julgador", "processos_tema", "mediana_dias"]]
+                    .copy()
+                    .rename(columns={"processos_tema": "processos_com_tempo"})
+                )
+                tempo_orgaos_fallback["p75_dias"] = pd.NA
+                tempo_orgaos_fallback = tempo_orgaos_fallback[
+                    tempo_orgaos_fallback["mediana_dias"].notna()
+                ].reset_index(drop=True)
+            tempo_orgaos_plot = tempo_orgaos if not tempo_orgaos.empty else tempo_orgaos_fallback
+            tempo_orgaos_plot_view = tempo_orgaos_plot.rename(
                 columns={"orgao_julgador": coluna_tabela_comparativa}
             )
 
@@ -4357,6 +4376,9 @@ def render() -> None:
                                             f"e tempo com ate {format_int_br(decision_size)} registros."
                                         ),
                                     )
+                                    st.success(
+                                        "Base estrategica atualizada. Mantive o tema selecionado para voce continuar daqui."
+                                    )
                                     st.rerun()
                 col_estrat1, col_estrat2 = st.columns([1.15, 0.85])
                 with col_estrat1:
@@ -4368,14 +4390,31 @@ def render() -> None:
                         st.caption(
                             f"Base reduzida para exibicao do grafico: minimo de {favorabilidade_minima_utilizada} decisoes uteis por item de {rotulo_comparativo.lower()}."
                         )
-                    st.pyplot(
-                        fig_favorabilidade_por_orgao(
-                            favorabilidade_orgaos.head(10),
-                            titulo=f"Indice de favorabilidade por {eixo_comparativo.lower()}",
-                            eixo_label=eixo_comparativo,
-                        ),
-                        clear_figure=True,
-                    )
+                    if not favorabilidade_orgaos.empty:
+                        st.pyplot(
+                            fig_favorabilidade_por_orgao(
+                                favorabilidade_orgaos.head(10),
+                                titulo=f"Indice de favorabilidade por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
+                        )
+                    elif not mix_orgaos_tema.empty:
+                        st.caption(
+                            "Como ainda nao ha base util pro/contra suficiente, o app mostra abaixo a composicao dos desfechos classificados por recorte."
+                        )
+                        st.pyplot(
+                            fig_desfechos_por_orgao(
+                                mix_orgaos_tema.head(10),
+                                titulo=f"Composicao dos desfechos por {eixo_comparativo.lower()}",
+                                eixo_label=eixo_comparativo,
+                            ),
+                            clear_figure=True,
+                        )
+                    else:
+                        st.info(
+                            f"Ainda nao encontrei desfechos classificados suficientes para montar um comparativo por {rotulo_comparativo.lower()}."
+                        )
                 with col_estrat2:
                     st.markdown("**Favorabilidade do tema**")
                     if int(favorabilidade_tema.get("decisoes_uteis", 0) or 0) > 0:
@@ -4390,6 +4429,18 @@ def render() -> None:
                         )
                         st.markdown(
                             f"- Neutro/processual fora do indice: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
+                        )
+                    elif int(favorabilidade_tema.get("total_classificados", 0) or 0) > 0:
+                        st.markdown(
+                            f"- Desfechos classificados totais: {format_int_br(favorabilidade_tema['total_classificados'])}"
+                        )
+                        st.markdown("- Decisoes uteis pro/contra/mistas: 0")
+                        st.markdown(
+                            f"- Neutro/processual: {favorabilidade_tema['neutro_pct']:.1f}% dos classificados"
+                        )
+                        st.markdown(f"- Desfecho predominante: {desfecho_predominante_card}")
+                        st.info(
+                            "Neste tema, os movimentos classificados ainda sao majoritariamente neutros ou processuais, entao o indice de favorabilidade fica sem base suficiente."
                         )
                     else:
                         st.info("Ainda nao ha massa critica de desfechos uteis para medir favorabilidade do tema.")
@@ -4451,16 +4502,20 @@ def render() -> None:
                         st.caption(
                             f"Base reduzida para exibicao do grafico: minimo de {tempo_minimo_utilizado} processo(s) com tempo por item de {rotulo_comparativo.lower()}."
                         )
+                    if tempo_orgaos.empty and not tempo_orgaos_fallback.empty:
+                        st.caption(
+                            "Leitura exploratoria: usei a mediana de tempo disponivel no resumo por recorte, mesmo sem massa suficiente para o comparativo completo."
+                        )
                     st.pyplot(
                         fig_tempo_por_orgao(
-                            tempo_orgaos.head(10),
+                            tempo_orgaos_plot.head(10),
                             titulo=f"Tempo mediano por {eixo_comparativo.lower()}",
                             eixo_label=eixo_comparativo,
                         ),
                         clear_figure=True,
                     )
-                    if not tempo_orgaos.empty:
-                        st.dataframe(tempo_orgaos_view.head(12), use_container_width=True, height=260)
+                    if not tempo_orgaos_plot.empty:
+                        st.dataframe(tempo_orgaos_plot_view.head(12), use_container_width=True, height=260)
                     else:
                         st.info(f"Sem base suficiente para comparar tempo mediano por {rotulo_comparativo.lower()}.")
                 with col_tempo_table:
