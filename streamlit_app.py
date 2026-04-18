@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dt_time
 from functools import lru_cache
 import html
@@ -881,6 +882,17 @@ def unique_assuntos_list(assuntos: Any) -> list[str]:
     return temas
 
 
+def resolve_theme_option(tema: Any, options: list[str]) -> str:
+    tema_normalizado = normalize_search_text(tema)
+    if not tema_normalizado:
+        return ""
+
+    for option in options:
+        if normalize_search_text(option) == tema_normalizado:
+            return str(option)
+    return ""
+
+
 def clean_normalized_text(text: Any) -> str:
     normalized = normalize_search_text(text)
     normalized = re.sub(r"[\(\)\[\];]+", " ", normalized)
@@ -1274,8 +1286,12 @@ def enrich_decision_proxy_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
 def filter_dataframe_by_tema(df_anpp: pd.DataFrame, tema: str) -> pd.DataFrame:
     if df_anpp.empty or not tema or "assuntos" not in df_anpp.columns:
         return df_anpp.copy()
+    tema_normalizado = normalize_search_text(tema)
     mask = df_anpp["assuntos"].apply(
-        lambda assuntos: tema in assuntos if isinstance(assuntos, list) else False
+        lambda assuntos: any(
+            normalize_search_text(assunto) == tema_normalizado
+            for assunto in assuntos
+        ) if isinstance(assuntos, list) else False
     )
     return df_anpp.loc[mask].copy()
 
@@ -4207,19 +4223,77 @@ def render() -> None:
                 timeout_consulta = DATAJUD_TIMEOUT_SECONDS
                 if busca_tema_direto:
                     timeout_consulta = THEME_DIRECT_TIMEOUT_SECONDS
-                hits = fetch_hits(
-                    api_key=api_key,
-                    classe_codigo=classe_codigo_consulta,
-                    size=size_efetivo,
-                    url=url,
-                    numero_processo=numero_processo,
-                    assunto_nome=tema_consulta_limpo,
-                    data_inicio=data_inicio_consulta,
-                    data_fim=data_fim_consulta,
-                    incluir_movimentos=not modo_rapido,
-                    modo_consulta=modo_consulta_base,
-                    timeout_seconds=timeout_consulta,
-                )
+                mapa_size = 0
+                decisao_size = 0
+                if not usar_numero_processo:
+                    if modo_rapido:
+                        if busca_tema_direto:
+                            decisao_size = min(size_efetivo, THEME_DIRECT_FAST_DECISION_LIMIT)
+                            avisos_consulta.append(
+                                "Busca por tema em modo rapido: mantive uma leitura estrategica inicial mais leve para nao sumirem os comparativos principais. Se quiser aprofundar, a estrategia ainda pode ser reforcada depois."
+                            )
+                        elif size_efetivo > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
+                            decisao_size = min(size_efetivo, FAST_DECISION_SAMPLE_LIMIT)
+                            mapa_size = min(size_efetivo, FAST_MAP_SAMPLE_LIMIT)
+                        else:
+                            avisos_consulta.append(
+                                "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
+                            )
+                    else:
+                        mapa_size = min(max(size_efetivo, 2000), MAX_PAGE_SIZE)
+                        decisao_size = min(max(size_efetivo, 400), 1200)
+                else:
+                    mapa_size = 0
+                    decisao_size = 0
+
+                hits_decisao: list[dict[str, Any]] = []
+                if modo_rapido and busca_tema_direto and decisao_size > 0:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        future_hits = executor.submit(
+                            fetch_hits,
+                            api_key=api_key,
+                            classe_codigo=classe_codigo_consulta,
+                            size=size_efetivo,
+                            url=url,
+                            numero_processo=numero_processo,
+                            assunto_nome=tema_consulta_limpo,
+                            data_inicio=data_inicio_consulta,
+                            data_fim=data_fim_consulta,
+                            incluir_movimentos=False,
+                            modo_consulta=modo_consulta_base,
+                            timeout_seconds=timeout_consulta,
+                        )
+                        future_hits_decisao = executor.submit(
+                            fetch_hits,
+                            api_key=api_key,
+                            classe_codigo=classe_codigo_consulta,
+                            size=decisao_size,
+                            url=url,
+                            numero_processo="",
+                            assunto_nome=tema_consulta_limpo,
+                            data_inicio=data_inicio_consulta,
+                            data_fim=data_fim_consulta,
+                            incluir_movimentos=True,
+                            modo_consulta=modo_consulta_base,
+                            source_fields=DECISION_SOURCE_FIELDS,
+                            timeout_seconds=timeout_consulta,
+                        )
+                        hits = future_hits.result()
+                        hits_decisao = future_hits_decisao.result()
+                else:
+                    hits = fetch_hits(
+                        api_key=api_key,
+                        classe_codigo=classe_codigo_consulta,
+                        size=size_efetivo,
+                        url=url,
+                        numero_processo=numero_processo,
+                        assunto_nome=tema_consulta_limpo,
+                        data_inicio=data_inicio_consulta,
+                        data_fim=data_fim_consulta,
+                        incluir_movimentos=not modo_rapido,
+                        modo_consulta=modo_consulta_base,
+                        timeout_seconds=timeout_consulta,
+                    )
                 df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
                 if not usar_numero_processo:
                     df_anpp = filter_dataframe_by_estrutura(df_anpp, tribunal_sigla, estrutura_filtro)
@@ -4227,8 +4301,6 @@ def render() -> None:
                     df_anpp = add_estrutura_column(df_anpp, tribunal_sigla)
                 top_100 = build_top_100(df_anpp)
                 size_int = int(size_efetivo)
-                mapa_size = 0
-                decisao_size = 0
                 top_codigos = pd.DataFrame()
                 top_orgaos_sigla = pd.DataFrame()
                 top_assuntos = pd.DataFrame()
@@ -4236,40 +4308,35 @@ def render() -> None:
                 qtd_mapa = 0
                 qtd_decisao = 0
 
-                if not usar_numero_processo:
-                    if modo_rapido:
-                        if busca_tema_direto:
-                            decisao_size = min(size_int, THEME_DIRECT_FAST_DECISION_LIMIT)
-                            avisos_consulta.append(
-                                "Busca por tema em modo rapido: mantive uma leitura estrategica inicial mais leve para nao sumirem os comparativos principais. Se quiser aprofundar, a estrategia ainda pode ser reforcada depois."
-                            )
-                        elif size_int > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
-                            decisao_size = min(size_int, FAST_DECISION_SAMPLE_LIMIT)
-                            mapa_size = min(size_int, FAST_MAP_SAMPLE_LIMIT)
-                        else:
-                            avisos_consulta.append(
-                                "Busca simples em modo rapido: o app priorizou a resposta principal e pulou a leitura decisoria complementar e o mapa automatico da sigla."
-                            )
+                if len(df_anpp) < size_int and not usar_numero_processo:
+                    if busca_tema_direto:
+                        avisos_consulta.append(
+                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este tema exato neste recorte. Isso normalmente indica que so havia essa quantidade disponivel para o filtro atual."
+                        )
                     else:
-                        mapa_size = min(max(size_int, 2000), MAX_PAGE_SIZE)
-                        decisao_size = min(max(size_int, 400), 1200)
+                        avisos_consulta.append(
+                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este recorte."
+                        )
 
+                if not usar_numero_processo:
                     if modo_rapido:
                         if decisao_size > 0:
                             try:
-                                hits_decisao = fetch_hits(
-                                    api_key=api_key,
-                                    classe_codigo=classe_codigo_consulta,
-                                    size=decisao_size,
-                                    url=url,
-                                    numero_processo="",
-                                    assunto_nome=tema_consulta_limpo,
-                                    data_inicio=data_inicio_consulta,
-                                    data_fim=data_fim_consulta,
-                                    incluir_movimentos=True,
-                                    modo_consulta=modo_consulta_base,
-                                    source_fields=DECISION_SOURCE_FIELDS,
-                                )
+                                if not hits_decisao:
+                                    hits_decisao = fetch_hits(
+                                        api_key=api_key,
+                                        classe_codigo=classe_codigo_consulta,
+                                        size=decisao_size,
+                                        url=url,
+                                        numero_processo="",
+                                        assunto_nome=tema_consulta_limpo,
+                                        data_inicio=data_inicio_consulta,
+                                        data_fim=data_fim_consulta,
+                                        incluir_movimentos=True,
+                                        modo_consulta=modo_consulta_base,
+                                        source_fields=DECISION_SOURCE_FIELDS,
+                                        timeout_seconds=timeout_consulta,
+                                    )
                                 df_decisao = hits_to_dataframe(hits_decisao, processar_movimentos=True)
                             except DataJudRequestError as exc:
                                 avisos_consulta.append(
@@ -4587,12 +4654,13 @@ def render() -> None:
         if tema_opcoes:
             tema_options = ["Todos os temas"] + tema_opcoes
             tema_select_key = "tema_para_analisar"
+            tema_resolvido = resolve_theme_option(tema_consulta_aplicado, tema_opcoes)
             tema_focado_automaticamente = bool(
-                tema_consulta_aplicado and tema_consulta_aplicado in tema_options
+                tema_resolvido
             )
             tema_prefill = (
-                tema_consulta_aplicado
-                if tema_consulta_aplicado and tema_consulta_aplicado in tema_options
+                tema_resolvido
+                if tema_resolvido
                 else "Todos os temas"
             )
             tema_query_signature = (
