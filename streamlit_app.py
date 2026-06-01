@@ -5275,22 +5275,47 @@ def render() -> None:
     for aviso in avisos_consulta:
         st.warning(aviso)
 
+    st.markdown("**Perfil de uso**")
+    perfil_uso = st.radio(
+        "Perfil de uso",
+        options=["advogado", "jurimetria"],
+        format_func=lambda valor: {
+            "advogado": "Modo advogado",
+            "jurimetria": "Modo jurimetria",
+        }[valor],
+        horizontal=True,
+        key="perfil_uso_resultados",
+    )
+    if perfil_uso == "advogado":
+        st.caption(
+            "Este modo prioriza leitura do caso, ficha processual, busca local na amostra e acesso aos processos."
+        )
+        area_options = ["Visao geral", "Processos", "Downloads"]
+        default_area = "Processos" if usar_numero_processo else "Visao geral"
+    else:
+        st.caption(
+            "Este modo prioriza temas, comparativos, estatisticas, mapa do tribunal e leitura estrategica da amostra."
+        )
+        area_options = ["Visao geral", "Temas e estrategia", "Estatisticas", "Mapa do tribunal", "Downloads", "Processos"]
+        default_area = "Temas e estrategia" if (not usar_numero_processo and isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty) else "Visao geral"
+
+    if (
+        st.session_state.get("perfil_uso_area_signature") != f"{perfil_uso}|{usar_numero_processo}"
+        or st.session_state.get("area_resultados_selecionada") not in area_options
+    ):
+        st.session_state["perfil_uso_area_signature"] = f"{perfil_uso}|{usar_numero_processo}"
+        st.session_state["area_resultados_selecionada"] = default_area
+
     st.markdown("**Navegacao dos resultados**")
     area_resultados = st.radio(
         "Area dos resultados",
-        options=[
-            "Visao geral",
-            "Processos",
-            "Temas e estrategia",
-            "Estatisticas",
-            "Mapa do tribunal",
-            "Downloads",
-        ],
+        options=area_options,
         horizontal=True,
+        key="area_resultados_selecionada",
         label_visibility="collapsed",
     )
 
-    if not assuntos_distintos.empty and area_resultados == "Visao geral":
+    if not assuntos_distintos.empty and area_resultados == "Visao geral" and perfil_uso == "jurimetria":
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
@@ -5302,7 +5327,12 @@ def render() -> None:
     else:
         df_export["resumo_processo"] = ""
 
-    if not process_summary_df.empty and area_resultados in {"Visao geral", "Processos"}:
+    mostrar_bloco_processos = bool(
+        area_resultados == "Processos"
+        or (area_resultados == "Visao geral" and (perfil_uso == "advogado" or usar_numero_processo))
+    )
+
+    if not process_summary_df.empty and mostrar_bloco_processos:
         tribunal_consulta_sigla = str(
             last_query_context.get("tribunal_sigla")
             or st.session_state.get("sigla_mapa")
