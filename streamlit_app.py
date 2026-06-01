@@ -4,6 +4,7 @@ from functools import lru_cache
 import html
 import io
 import importlib
+import json
 import os
 import re
 import time
@@ -19,6 +20,8 @@ URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
 URL_TEMPLATE = "https://api-publica.datajud.cnj.jus.br/api_publica_{tribunal}/_search"
 CNJ_SIGLAS_URL = "https://www.cnj.jus.br/poder-judiciario/tribunais/"
 CNJ_CLASSES_URL = "https://www.cnj.jus.br/sgt/consulta_publica_classes.php"
+JUS_BR_URL = "https://www.jus.br/"
+ESCRITORIO_DIGITAL_URL = "https://www.escritoriodigital.jus.br/"
 MAX_PAGE_SIZE = 10000
 MAX_TOTAL_SIZE = 50000
 DATAJUD_TIMEOUT_SECONDS = 120
@@ -34,7 +37,27 @@ STRATEGY_RELOAD_MAX_SIZE = 3000
 THEME_SUGGESTION_SAMPLE_SIZE = 800
 THEME_SUGGESTION_MAX_ITEMS = 500
 THEME_SUGGESTION_TIMEOUT_SECONDS = 18
-APP_VERSION_LABEL = "Versao esperada: 17/04/2026 | Ajuste de Classes com mais processos"
+VALUE_CAUSE_SOURCE_FIELDS = [
+    "valorCausa",
+    "valorAcao",
+    "dadosBasicos.valorCausa",
+    "dadosBasicos.valorAcao",
+    "dadosBasicos.valorCausa.valor",
+    "dadosBasicos.valorAcao.valor",
+]
+DEFAULT_SOURCE_FIELDS = [
+    "numeroProcesso",
+    "classe.codigo",
+    "classe.nome",
+    "dataAjuizamento",
+    "dataHoraUltimaAtualizacao",
+    "formato",
+    "orgaoJulgador.nome",
+    "orgaoJulgador.codigoMunicipioIBGE",
+    "grau",
+    "assuntos",
+    *VALUE_CAUSE_SOURCE_FIELDS,
+]
 DECISION_SOURCE_FIELDS = [
     "numeroProcesso",
     "classe.codigo",
@@ -45,6 +68,17 @@ DECISION_SOURCE_FIELDS = [
     "grau",
     "assuntos",
     "movimentos",
+    *VALUE_CAUSE_SOURCE_FIELDS,
+]
+PUBLIC_PROCESS_FIELD_CANDIDATES = [
+    ("Valor da causa", ["valorCausa", "valorAcao", "dadosBasicos.valorCausa", "dadosBasicos.valorAcao"]),
+    ("Nivel de sigilo", ["nivelSigilo", "sigilo", "dadosBasicos.nivelSigilo"]),
+    ("Sistema", ["sistema", "dadosBasicos.sistema"]),
+    ("Tribunal informado", ["tribunal", "dadosBasicos.tribunal"]),
+    ("Area", ["area", "dadosBasicos.area"]),
+    ("Competencia", ["competencia", "dadosBasicos.competencia"]),
+    ("Justica gratuita", ["justicaGratuita", "dadosBasicos.justicaGratuita"]),
+    ("Prioridade", ["prioridade", "dadosBasicos.prioridade"]),
 ]
 
 CODIGOS_TJM = [
@@ -854,6 +888,534 @@ def parse_movimentos(movimentos: Any) -> list[list[Any]]:
     return parsed
 
 
+def is_blank_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    try:
+        return bool(pd.isna(value))
+    except Exception:
+        return False
+
+
+def first_non_blank(*values: Any) -> Any:
+    for value in values:
+        if not is_blank_value(value):
+            return value
+    return None
+
+
+def format_datetime_label(value: Any, include_time: bool = True) -> str:
+    if is_blank_value(value):
+        return ""
+    dt_value = pd.to_datetime(value, errors="coerce")
+    if pd.isna(dt_value):
+        return ""
+    if include_time:
+        return dt_value.strftime("%d/%m/%Y %H:%M")
+    return dt_value.strftime("%d/%m/%Y")
+
+
+def count_movimentos(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    try:
+        if pd.isna(value):
+            return 0
+    except Exception:
+        pass
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=8192)
+def normalize_field_key_name(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text or ""))
+    normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def deep_get_path(source: Any, path: str) -> Any:
+    current = source
+    for part in str(path or "").split("."):
+        if isinstance(current, dict):
+            if part in current:
+                current = current.get(part)
+                continue
+            normalized_part = normalize_field_key_name(part)
+            matched_key = next(
+                (
+                    key
+                    for key in current.keys()
+                    if normalize_field_key_name(str(key)) == normalized_part
+                ),
+                None,
+            )
+            if matched_key is None:
+                return None
+            current = current.get(matched_key)
+            continue
+        return None
+    return current
+
+
+def parse_numeric_like(value: Any) -> float | None:
+    if is_blank_value(value):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except Exception:
+            return None
+        return number if pd.notna(number) else None
+    if isinstance(value, dict):
+        for key in ("valor", "value", "quantia", "amount", "numero"):
+            nested = value.get(key)
+            number = parse_numeric_like(nested)
+            if number is not None:
+                return number
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    text = re.sub(r"[R$\s]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[^0-9,.\-]", "", text)
+    if not text or text in {"-", ".", ","}:
+        return None
+
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(".", "").replace(",", ".")
+
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def extract_named_value_from_source(
+    source: Any,
+    paths: list[str],
+    numeric: bool = False,
+) -> Any:
+    for path in paths:
+        value = deep_get_path(source, path)
+        if numeric:
+            number = parse_numeric_like(value)
+            if number is not None:
+                return number
+        elif not is_blank_value(value):
+            return value
+    return None
+
+
+def recursive_find_value_by_keys(
+    source: Any,
+    target_keys: set[str],
+    numeric: bool = False,
+    depth: int = 0,
+    max_depth: int = 6,
+) -> Any:
+    if depth > max_depth or source is None:
+        return None
+    if isinstance(source, dict):
+        for key, value in source.items():
+            normalized_key = normalize_field_key_name(str(key))
+            if normalized_key in target_keys:
+                if numeric:
+                    number = parse_numeric_like(value)
+                    if number is not None:
+                        return number
+                elif not is_blank_value(value):
+                    return value
+            found = recursive_find_value_by_keys(
+                value,
+                target_keys=target_keys,
+                numeric=numeric,
+                depth=depth + 1,
+                max_depth=max_depth,
+            )
+            if found is not None and not is_blank_value(found):
+                return found
+        return None
+    if isinstance(source, list):
+        for item in source:
+            found = recursive_find_value_by_keys(
+                item,
+                target_keys=target_keys,
+                numeric=numeric,
+                depth=depth + 1,
+                max_depth=max_depth,
+            )
+            if found is not None and not is_blank_value(found):
+                return found
+    return None
+
+
+def extract_valor_causa(source: Any) -> float | None:
+    value = extract_named_value_from_source(source, VALUE_CAUSE_SOURCE_FIELDS, numeric=True)
+    if value is not None:
+        return value
+    return recursive_find_value_by_keys(
+        source,
+        target_keys={"valorcausa", "valoracao"},
+        numeric=True,
+    )
+
+
+def format_currency_br(value: Any) -> str:
+    number = parse_numeric_like(value)
+    if number is None:
+        return ""
+    formatted = f"{number:,.2f}"
+    formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
+
+
+def summarize_assuntos_text(assuntos: Any, max_items: int = 3) -> str:
+    temas = unique_assuntos_list(assuntos)
+    if not temas:
+        return ""
+    if len(temas) <= max_items:
+        return ", ".join(temas)
+    restante = len(temas) - max_items
+    return f"{', '.join(temas[:max_items])} e mais {restante}"
+
+
+def latest_movement_entry(movimentos: Any) -> tuple[Any, str, Any]:
+    if not isinstance(movimentos, list):
+        return None, "", pd.NaT
+    for movimento in movimentos:
+        if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
+            continue
+        codigo = movimento[0] if len(movimento) > 0 else None
+        nome = str(movimento[1] or "").strip()
+        data_hora = movimento[2] if len(movimento) > 2 else pd.NaT
+        if nome or not is_blank_value(data_hora):
+            return codigo, nome, data_hora
+    return None, "", pd.NaT
+
+
+def flatten_public_scalar_fields(
+    source: Any,
+    prefix: str = "",
+    depth: int = 0,
+    max_depth: int = 4,
+) -> list[tuple[str, str]]:
+    if depth > max_depth or source is None:
+        return []
+
+    rows: list[tuple[str, str]] = []
+    if isinstance(source, dict):
+        for key, value in source.items():
+            normalized_key = normalize_field_key_name(str(key))
+            if normalized_key in {"movimentos", "assuntos"}:
+                continue
+            label = f"{prefix}.{key}" if prefix else str(key)
+            rows.extend(
+                flatten_public_scalar_fields(
+                    value,
+                    prefix=label,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                )
+            )
+        return rows
+
+    if isinstance(source, list):
+        if all(not isinstance(item, (dict, list, tuple, set)) for item in source):
+            joined = ", ".join(str(item) for item in source if not is_blank_value(item))
+            if joined:
+                rows.append((prefix, joined))
+            return rows
+        return rows
+
+    if not is_blank_value(source):
+        if isinstance(source, (pd.Timestamp, datetime)):
+            value_text = format_datetime_label(source)
+        else:
+            value_text = str(source).strip()
+        if value_text:
+            rows.append((prefix, value_text))
+    return rows
+
+
+def build_public_additional_fields_dataframe(source: Any) -> pd.DataFrame:
+    rows: list[tuple[str, str]] = []
+    for label, paths in PUBLIC_PROCESS_FIELD_CANDIDATES:
+        if label == "Valor da causa":
+            value = extract_valor_causa(source)
+            value_text = format_currency_br(value)
+        else:
+            value = extract_named_value_from_source(source, paths)
+            value_text = str(value).strip() if not is_blank_value(value) else ""
+        if value_text:
+            rows.append((label, value_text))
+
+    known_labels = {label for label, _ in rows}
+    flattened = flatten_public_scalar_fields(source)
+    for field_name, value_text in flattened:
+        clean_field = str(field_name or "").strip()
+        clean_value = str(value_text or "").strip()
+        if not clean_field or not clean_value:
+            continue
+        if clean_field in known_labels:
+            continue
+        rows.append((clean_field, clean_value))
+
+    df_fields = pd.DataFrame(rows, columns=["campo", "valor"])
+    if df_fields.empty:
+        return df_fields
+    df_fields = df_fields.drop_duplicates(subset=["campo", "valor"]).reset_index(drop=True)
+    return df_fields.head(80)
+
+
+def find_raw_source_for_process(numero_processo: str, hits: Any) -> dict[str, Any]:
+    numero = normalize_numero_processo(numero_processo)
+    if not numero or not isinstance(hits, list):
+        return {}
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        if not isinstance(source, dict):
+            continue
+        numero_hit = normalize_numero_processo(
+            first_non_blank(
+                source.get("numeroProcesso"),
+                deep_get_path(source, "dadosBasicos.numeroProcesso"),
+            )
+        )
+        if numero_hit == numero:
+            return source
+    return {}
+
+
+def build_process_option_label(numero_processo: str, classe: str, orgao_julgador: str) -> str:
+    classe_texto = str(classe or "").strip() or "Classe nao informada"
+    orgao_texto = shorten_display_label(str(orgao_julgador or "").strip(), max_chars=52) or "Orgao nao informado"
+    return f"{numero_processo} | {classe_texto} | {orgao_texto}"
+
+
+def build_process_summary_text(record: Any) -> str:
+    classe = str(first_non_blank(record.get("classe"), "classe nao informada") or "").strip()
+    orgao = str(first_non_blank(record.get("orgao_julgador"), "orgao nao informado") or "").strip()
+    grau = str(first_non_blank(record.get("grau"), "") or "").strip()
+    assuntos = summarize_assuntos_text(record.get("assuntos"))
+    valor_causa = format_currency_br(record.get("valor_causa"))
+    ajuizamento = format_datetime_label(record.get("data_ajuizamento"), include_time=False)
+    ultima_atualizacao = format_datetime_label(record.get("ultima_atualizacao"))
+    decisao_categoria = str(first_non_blank(record.get("decisao_categoria"), "") or "").strip()
+    decisao_movimento = str(first_non_blank(record.get("decisao_movimento"), "") or "").strip()
+    decisao_data = format_datetime_label(record.get("decisao_data"))
+    _, ultimo_movimento_nome, ultimo_movimento_data = latest_movement_entry(record.get("movimentos"))
+    ultimo_movimento_data_texto = format_datetime_label(ultimo_movimento_data)
+    qtd_movimentos = count_movimentos(record.get("movimentos"))
+
+    partes = [f"Classe {classe}.", f"Orgao julgador: {orgao}."]
+    if grau:
+        partes.append(f"Grau: {grau}.")
+    if ajuizamento:
+        partes.append(f"Distribuido em {ajuizamento}.")
+    if valor_causa:
+        partes.append(f"Valor da causa: {valor_causa}.")
+    if assuntos:
+        partes.append(f"Temas principais: {assuntos}.")
+    if decisao_categoria:
+        partes.append(f"Desfecho proxy identificado: {decisao_categoria}.")
+    if decisao_movimento:
+        if decisao_data:
+            partes.append(f"Movimento decisorio mais recente: {decisao_movimento} ({decisao_data}).")
+        else:
+            partes.append(f"Movimento decisorio mais recente: {decisao_movimento}.")
+    elif ultimo_movimento_nome:
+        if ultimo_movimento_data_texto:
+            partes.append(f"Ultimo movimento carregado: {ultimo_movimento_nome} ({ultimo_movimento_data_texto}).")
+        else:
+            partes.append(f"Ultimo movimento carregado: {ultimo_movimento_nome}.")
+    if qtd_movimentos:
+        partes.append(f"Movimentos carregados: {qtd_movimentos}.")
+    if ultima_atualizacao:
+        partes.append(f"Ultima atualizacao em {ultima_atualizacao}.")
+    return " ".join(partes)
+
+
+def build_process_summary_dataframe(
+    df_anpp: pd.DataFrame,
+    df_decisao: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "numero_processo",
+        "classe",
+        "orgao_julgador",
+        "grau",
+        "valor_causa",
+        "assuntos_resumo",
+        "data_ajuizamento",
+        "ultima_atualizacao",
+        "movimentos_carregados",
+        "resumo_processo",
+    ]
+    if df_anpp.empty or "numero_processo" not in df_anpp.columns:
+        return pd.DataFrame(columns=columns)
+
+    detail_map: dict[str, Any] = {}
+    if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty and "numero_processo" in df_decisao.columns:
+        df_detail = df_decisao.drop_duplicates(subset=["numero_processo"], keep="first")
+        for _, detail_row in df_detail.iterrows():
+            numero = str(detail_row.get("numero_processo", "") or "").strip()
+            if numero:
+                detail_map[numero] = detail_row
+
+    rows: list[dict[str, Any]] = []
+    for _, row in df_anpp.reset_index(drop=True).iterrows():
+        numero = str(row.get("numero_processo", "") or "").strip()
+        detail_row = detail_map.get(numero, row)
+        classe = first_non_blank(detail_row.get("classe"), row.get("classe"), "")
+        orgao = first_non_blank(detail_row.get("orgao_julgador"), row.get("orgao_julgador"), "")
+        grau = first_non_blank(detail_row.get("grau"), row.get("grau"), "")
+        valor_causa = first_non_blank(detail_row.get("valor_causa"), row.get("valor_causa"))
+        assuntos_resumo = summarize_assuntos_text(first_non_blank(detail_row.get("assuntos"), row.get("assuntos"), []), max_items=5)
+        data_ajuizamento = first_non_blank(
+            detail_row.get("data_ajuizamento"),
+            row.get("data_ajuizamento"),
+            pd.NaT,
+        )
+        ultima_atualizacao = first_non_blank(
+            detail_row.get("ultima_atualizacao"),
+            row.get("ultima_atualizacao"),
+            pd.NaT,
+        )
+        rows.append(
+            {
+                "numero_processo": numero,
+                "classe": str(classe or "").strip(),
+                "orgao_julgador": str(orgao or "").strip(),
+                "grau": str(grau or "").strip(),
+                "valor_causa": format_currency_br(valor_causa),
+                "assuntos_resumo": assuntos_resumo,
+                "data_ajuizamento": format_datetime_label(data_ajuizamento, include_time=False),
+                "ultima_atualizacao": format_datetime_label(ultima_atualizacao),
+                "movimentos_carregados": count_movimentos(detail_row.get("movimentos")),
+                "resumo_processo": build_process_summary_text(detail_row),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def filter_process_summary_dataframe(df_processos: pd.DataFrame, query: str) -> pd.DataFrame:
+    if df_processos.empty:
+        return df_processos
+    termo = normalize_search_text(query)
+    if not termo:
+        return df_processos
+
+    colunas_busca = [
+        "numero_processo",
+        "classe",
+        "orgao_julgador",
+        "grau",
+        "valor_causa",
+        "assuntos_resumo",
+        "resumo_processo",
+    ]
+    base = df_processos[colunas_busca].fillna("").astype(str)
+    mask = base.apply(
+        lambda row: any(termo in normalize_search_text(value) for value in row.tolist()),
+        axis=1,
+    )
+    return df_processos.loc[mask].copy()
+
+
+def build_process_metadata_dataframe(
+    record: Any,
+    tribunal_sigla: str,
+    raw_source: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    dados = [
+        ("Numero do processo", str(record.get("numero_processo", "") or "").strip()),
+        ("Tribunal da consulta", str(tribunal_sigla or "").upper()),
+        ("Classe", str(record.get("classe", "") or "").strip()),
+        ("Codigo da classe", str(record.get("classe_codigo", "") or "").strip()),
+        ("Grau", str(record.get("grau", "") or "").strip()),
+        ("Orgao julgador", str(record.get("orgao_julgador", "") or "").strip()),
+        ("Data de ajuizamento", format_datetime_label(record.get("data_ajuizamento"), include_time=False)),
+        ("Ultima atualizacao", format_datetime_label(record.get("ultima_atualizacao"))),
+        ("Formato", str(record.get("formato", "") or "").strip()),
+        ("Valor da causa", format_currency_br(record.get("valor_causa"))),
+        ("Assuntos", summarize_assuntos_text(record.get("assuntos"), max_items=5)),
+        ("Movimentos carregados", str(count_movimentos(record.get("movimentos")))),
+        ("Desfecho proxy", str(record.get("decisao_categoria", "") or "").strip()),
+        ("Movimento decisorio", str(record.get("decisao_movimento", "") or "").strip()),
+    ]
+    if "dias_ate_decisao_proxy" in record.index and not is_blank_value(record.get("dias_ate_decisao_proxy")):
+        try:
+            valor_dias = float(record.get("dias_ate_decisao_proxy"))
+            dados.append(("Tempo ate o desfecho proxy", f"{valor_dias:.1f} dias"))
+        except Exception:
+            pass
+    if isinstance(raw_source, dict) and raw_source:
+        for label, paths in PUBLIC_PROCESS_FIELD_CANDIDATES:
+            if label == "Valor da causa":
+                continue
+            value = extract_named_value_from_source(raw_source, paths)
+            value_text = str(value).strip() if not is_blank_value(value) else ""
+            if value_text:
+                dados.append((label, value_text))
+    df_meta = pd.DataFrame(dados, columns=["campo", "valor"])
+    df_meta["valor"] = df_meta["valor"].fillna("").astype(str).str.strip()
+    return df_meta[df_meta["valor"] != ""].drop_duplicates().reset_index(drop=True)
+
+
+def build_movements_timeline_dataframe(movimentos: Any, max_items: int = 80) -> pd.DataFrame:
+    if not isinstance(movimentos, list):
+        return pd.DataFrame(columns=["data_hora", "codigo", "movimento"])
+
+    rows: list[dict[str, Any]] = []
+    for movimento in movimentos[:max_items]:
+        if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
+            continue
+        codigo = movimento[0] if len(movimento) > 0 else ""
+        nome = str(movimento[1] or "").strip()
+        data_hora = movimento[2] if len(movimento) > 2 else pd.NaT
+        rows.append(
+            {
+                "data_hora": format_datetime_label(data_hora),
+                "codigo": "" if is_blank_value(codigo) else str(codigo),
+                "movimento": nome,
+            }
+        )
+    return pd.DataFrame(rows, columns=["data_hora", "codigo", "movimento"])
+
+
+def find_process_record(
+    numero_processo: str,
+    df_anpp: pd.DataFrame,
+    df_decisao: pd.DataFrame | None = None,
+) -> pd.Series:
+    numero = str(numero_processo or "").strip()
+    for dataframe in (df_decisao, df_anpp):
+        if not isinstance(dataframe, pd.DataFrame) or dataframe.empty or "numero_processo" not in dataframe.columns:
+            continue
+        matches = dataframe[dataframe["numero_processo"].fillna("").astype(str).str.strip() == numero]
+        if not matches.empty:
+            return matches.iloc[0]
+    return pd.Series(dtype="object")
+
+
 @lru_cache(maxsize=16384)
 def _normalize_search_text_cached(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text)
@@ -1275,7 +1837,7 @@ def enrich_decision_proxy_dataframe(df_anpp: pd.DataFrame) -> pd.DataFrame:
         index=df_decisao.index,
     )
     df_decisao = pd.concat([df_decisao, extra_df], axis=1)
-    df_decisao["decisao_data"] = pd.to_datetime(df_decisao["decisao_data"], errors="coerce")
+    df_decisao["decisao_data"] = df_decisao["decisao_data"].apply(to_sao_paulo_datetime)
     df_decisao["dias_ate_decisao_proxy"] = (
         df_decisao["decisao_data"] - df_decisao["data_ajuizamento"]
     ).dt.total_seconds() / 86400.0
@@ -2353,6 +2915,7 @@ def fetch_hits(
     incluir_movimentos: bool = False,
     modo_consulta: str = "classe_ou_processo",
     source_fields: list[str] | None = None,
+    full_source: bool = False,
     timeout_seconds: int = DATAJUD_TIMEOUT_SECONDS,
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
@@ -2380,18 +2943,7 @@ def fetch_hits(
     else:
         query = {"match_all": {}}
 
-    campos_source = list(source_fields) if source_fields else [
-        "numeroProcesso",
-        "classe.codigo",
-        "classe.nome",
-        "dataAjuizamento",
-        "dataHoraUltimaAtualizacao",
-        "formato",
-        "orgaoJulgador.nome",
-        "orgaoJulgador.codigoMunicipioIBGE",
-        "grau",
-        "assuntos",
-    ]
+    campos_source = list(source_fields) if source_fields else list(DEFAULT_SOURCE_FIELDS)
     if incluir_movimentos and "movimentos" not in campos_source:
         campos_source.append("movimentos")
 
@@ -2403,10 +2955,11 @@ def fetch_hits(
     )
     payload = {
         "size": size,
-        "_source": campos_source,
         "query": query,
         "track_total_hits": False,
     }
+    if not full_source:
+        payload["_source"] = campos_source
     if not use_unsorted_theme_direct:
         payload["sort"] = standard_sort
     headers = {
@@ -2437,11 +2990,12 @@ def fetch_hits(
         page_size = min(MAX_PAGE_SIZE, size - len(all_hits))
         paged_payload = {
             "size": page_size,
-            "_source": campos_source,
             "query": query,
             "sort": sort,
             "track_total_hits": False,
         }
+        if not full_source:
+            paged_payload["_source"] = campos_source
         if search_after is not None:
             paged_payload["search_after"] = search_after
 
@@ -2487,18 +3041,21 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         else:
             movimentos_valor = len(movimentos_raw) if isinstance(movimentos_raw, list) else 0
 
+        valor_causa = extract_valor_causa(source)
+
         rows.append(
             [
-                source.get("numeroProcesso"),
-                classe.get("codigo"),
-                classe.get("nome"),
-                source.get("dataAjuizamento"),
-                source.get("dataHoraUltimaAtualizacao"),
-                source.get("formato"),
-                orgao.get("nome"),
-                orgao.get("codigoMunicipioIBGE"),
-                source.get("grau"),
-                source.get("assuntos", []),
+                first_non_blank(source.get("numeroProcesso"), deep_get_path(source, "dadosBasicos.numeroProcesso")),
+                first_non_blank(classe.get("codigo"), deep_get_path(source, "dadosBasicos.classe.codigo")),
+                first_non_blank(classe.get("nome"), deep_get_path(source, "dadosBasicos.classe.nome")),
+                first_non_blank(source.get("dataAjuizamento"), deep_get_path(source, "dadosBasicos.dataAjuizamento")),
+                first_non_blank(source.get("dataHoraUltimaAtualizacao"), deep_get_path(source, "dadosBasicos.dataHoraUltimaAtualizacao")),
+                first_non_blank(source.get("formato"), deep_get_path(source, "dadosBasicos.formato")),
+                first_non_blank(orgao.get("nome"), deep_get_path(source, "dadosBasicos.orgaoJulgador.nome")),
+                first_non_blank(orgao.get("codigoMunicipioIBGE"), deep_get_path(source, "dadosBasicos.orgaoJulgador.codigoMunicipioIBGE")),
+                first_non_blank(source.get("grau"), deep_get_path(source, "dadosBasicos.grau")),
+                first_non_blank(source.get("assuntos", []), deep_get_path(source, "dadosBasicos.assuntos"), []),
+                valor_causa,
                 movimentos_valor,
                 hit.get("sort") if isinstance(hit, dict) else None,
             ]
@@ -2515,6 +3072,7 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         "municipio",
         "grau",
         "assuntos",
+        "valor_causa",
         "movimentos",
         "sort",
     ]
@@ -2531,6 +3089,7 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         )
     else:
         df["movimentos"] = pd.to_numeric(df["movimentos"], errors="coerce").fillna(0).astype(int)
+    df["valor_causa"] = df["valor_causa"].apply(parse_numeric_like)
     df["data_ajuizamento"] = df["data_ajuizamento"].apply(to_sao_paulo_datetime)
     df["ultima_atualizacao"] = df["ultima_atualizacao"].apply(to_sao_paulo_datetime)
     df = df.sort_values(
@@ -3275,22 +3834,117 @@ def dataframe_for_display(df_anpp: pd.DataFrame, max_rows: int = 400) -> pd.Data
     if df_anpp.empty:
         return df_anpp
 
-    def movimentos_count(value: Any) -> int:
-        if isinstance(value, list):
-            return len(value)
-        try:
-            return int(value)
-        except Exception:
-            return 0
-
     df_view = df_anpp.head(max_rows).copy()
     df_view["assuntos"] = df_view["assuntos"].apply(
         lambda x: ", ".join(x[:3]) + (" ..." if len(x) > 3 else "")
         if isinstance(x, list)
         else ""
     )
-    df_view["qtd_movimentos"] = df_view["movimentos"].apply(movimentos_count)
+    if "valor_causa" in df_view.columns:
+        df_view["valor_causa"] = df_view["valor_causa"].map(format_currency_br)
+    df_view["qtd_movimentos"] = df_view["movimentos"].apply(count_movimentos)
     return df_view.drop(columns=["movimentos", "sort"], errors="ignore")
+
+
+def valor_causa_series(df_anpp: pd.DataFrame) -> pd.Series:
+    if df_anpp.empty or "valor_causa" not in df_anpp.columns:
+        return pd.Series(dtype="float64")
+    valores = df_anpp["valor_causa"].apply(parse_numeric_like)
+    valores = pd.to_numeric(valores, errors="coerce")
+    valores = valores[(valores.notna()) & (valores >= 0)]
+    return valores.astype(float)
+
+
+def valor_causa_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    valores = valor_causa_series(df_anpp)
+    total = int(len(df_anpp))
+    com_valor = int(len(valores))
+    cobertura = (com_valor / total * 100) if total else 0.0
+    if valores.empty:
+        return {
+            "total": total,
+            "com_valor": com_valor,
+            "cobertura": cobertura,
+            "media": None,
+            "mediana": None,
+            "p25": None,
+            "p75": None,
+            "maximo": None,
+        }
+    return {
+        "total": total,
+        "com_valor": com_valor,
+        "cobertura": cobertura,
+        "media": float(valores.mean()),
+        "mediana": float(valores.median()),
+        "p25": float(valores.quantile(0.25)),
+        "p75": float(valores.quantile(0.75)),
+        "maximo": float(valores.max()),
+    }
+
+
+def valor_causa_por_classe_dataframe(
+    df_anpp: pd.DataFrame,
+    max_items: int = 10,
+    min_registros: int = 3,
+) -> pd.DataFrame:
+    if df_anpp.empty or "classe" not in df_anpp.columns or "valor_causa" not in df_anpp.columns:
+        return pd.DataFrame(columns=["classe", "processos_com_valor", "media", "mediana"])
+
+    base = df_anpp[["classe", "valor_causa"]].copy()
+    base["classe"] = base["classe"].fillna("").astype(str).str.strip()
+    base["valor_causa"] = base["valor_causa"].apply(parse_numeric_like)
+    base = base[(base["classe"] != "") & (base["valor_causa"].notna())]
+    if base.empty:
+        return pd.DataFrame(columns=["classe", "processos_com_valor", "media", "mediana"])
+
+    resultado = (
+        base.groupby("classe", as_index=False)["valor_causa"]
+        .agg(
+            processos_com_valor="size",
+            media="mean",
+            mediana="median",
+        )
+        .sort_values(["processos_com_valor", "mediana"], ascending=[False, False])
+    )
+    resultado = resultado[resultado["processos_com_valor"] >= int(min_registros)].head(max_items).copy()
+    if resultado.empty:
+        return pd.DataFrame(columns=["classe", "processos_com_valor", "media", "mediana"])
+    resultado["classe"] = resultado["classe"].map(lambda valor: shorten_display_label(valor, max_chars=44))
+    resultado["media"] = resultado["media"].map(format_currency_br)
+    resultado["mediana"] = resultado["mediana"].map(format_currency_br)
+    return resultado[["classe", "processos_com_valor", "media", "mediana"]]
+
+
+def fig_boxplot_valor_causa(df_anpp: pd.DataFrame) -> Any:
+    plt = get_plt()
+    valores = valor_causa_series(df_anpp)
+    fig, ax = plt.subplots(figsize=(10, 3.8))
+    if valores.empty:
+        ax.set_title("Valor da causa")
+        ax.text(0.5, 0.5, "Sem valores de causa disponiveis nesta amostra.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    usar_log = bool(valores.min() > 0 and valores.quantile(0.95) / max(valores.quantile(0.25), 1.0) > 30)
+    ax.boxplot(
+        valores,
+        vert=False,
+        patch_artist=True,
+        boxprops={"facecolor": "#A0CBE8", "alpha": 0.85},
+        medianprops={"color": "#E15759", "linewidth": 2},
+        whiskerprops={"color": "#4E79A7"},
+        capprops={"color": "#4E79A7"},
+        flierprops={"marker": "o", "markersize": 4, "markerfacecolor": "#F28E2B", "alpha": 0.4},
+    )
+    ax.set_title("Boxplot do valor da causa")
+    ax.set_xlabel("Valor da causa")
+    ax.grid(axis="x", linestyle="--", alpha=0.25)
+    if usar_log:
+        ax.set_xscale("log")
+        ax.set_xlabel("Valor da causa (escala log)")
+    fig.tight_layout()
+    return fig
 
 
 def fig_horario(df_anpp: pd.DataFrame) -> Any:
@@ -3800,13 +4454,27 @@ def fig_tendencia_tema(serie: pd.Series, tema: str) -> Any:
     return fig
 
 
-def save_outputs(df: pd.DataFrame, top_100: pd.Series) -> None:
+def save_outputs(
+    df: pd.DataFrame,
+    top_100: pd.Series,
+    df_export: pd.DataFrame | None = None,
+    process_summary_df: pd.DataFrame | None = None,
+) -> None:
     plt = get_plt()
-    df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
+    export_df = df_export if isinstance(df_export, pd.DataFrame) and not df_export.empty else df
+    export_df.to_csv("consulta_datajud.csv", sep=",", header=True, index=False)
     top_orgaos_julgadores_dataframe(df).to_csv("top_orgaos_julgadores_datajud.csv", index=False)
 
     with open("movimentos_datajud.txt", "w") as file:
         file.write("Arquivo gerado pelo Streamlit.")
+
+    if isinstance(process_summary_df, pd.DataFrame) and not process_summary_df.empty:
+        process_summary_df.to_csv("resumos_processos_datajud.csv", index=False)
+        with open("resumos_processos_datajud.txt", "w") as file:
+            for _, row in process_summary_df.iterrows():
+                numero = str(row.get("numero_processo", "") or "").strip()
+                resumo = str(row.get("resumo_processo", "") or "").strip()
+                file.write(f"{numero} | {resumo}\n")
 
     with open("top_100_datajud.txt", "w") as file:
         for index, value in top_100.items():
@@ -3875,7 +4543,6 @@ def render() -> None:
         unsafe_allow_html=True,
     )
     st.title("Jurimetria com a API DataJud")
-    st.caption(APP_VERSION_LABEL)
     st.markdown(
         "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
         "GitHub: [@lucaslmfbib](https://github.com/lucaslmfbib) | "
@@ -4178,6 +4845,23 @@ def render() -> None:
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         st.caption(f"URL usada: {url}")
+        with st.expander("Resumo da busca", expanded=True):
+            st.markdown(f"- Tribunal: `{tribunal_sigla.strip().upper() or 'TJMG'}`")
+            st.markdown(
+                f"- Modo: `{ {'classe': 'Classe processual', 'tema': 'Tema no tribunal', 'processo': 'Numero do processo'}[modo_busca_sidebar] }`"
+            )
+            if modo_busca_sidebar == "classe":
+                st.markdown(f"- Classe CNJ: `{classe_codigo}`")
+            elif modo_busca_sidebar == "tema":
+                st.markdown(f"- Tema: `{tema_consulta or 'Nao preenchido'}`")
+            else:
+                st.markdown(f"- Processo: `{numero_processo or 'Nao preenchido'}`")
+            if modo_busca_sidebar != "processo":
+                st.markdown(f"- Estrutura: `{format_estrutura_option(estrutura_filtro)}`")
+                if aplicar_periodo:
+                    st.markdown(f"- Periodo: `{format_periodo_aplicado(data_inicio, data_fim)}`")
+            st.markdown(f"- Amostra pedida: `{format_int_br(int(size))}`")
+            st.markdown(f"- Modo rapido: `{'Sim' if modo_rapido else 'Nao'}`")
         executar = st.button("Buscar no DataJud", use_container_width=True)
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
@@ -4290,11 +4974,15 @@ def render() -> None:
                         assunto_nome=tema_consulta_limpo,
                         data_inicio=data_inicio_consulta,
                         data_fim=data_fim_consulta,
-                        incluir_movimentos=not modo_rapido,
+                        incluir_movimentos=bool(usar_numero_processo or not modo_rapido),
                         modo_consulta=modo_consulta_base,
+                        full_source=bool(usar_numero_processo),
                         timeout_seconds=timeout_consulta,
                     )
-                df_anpp = hits_to_dataframe(hits, processar_movimentos=not modo_rapido)
+                df_anpp = hits_to_dataframe(
+                    hits,
+                    processar_movimentos=bool(usar_numero_processo or not modo_rapido),
+                )
                 if not usar_numero_processo:
                     df_anpp = filter_dataframe_by_estrutura(df_anpp, tribunal_sigla, estrutura_filtro)
                 else:
@@ -4353,7 +5041,12 @@ def render() -> None:
                         df_decisao = filter_dataframe_by_estrutura(df_decisao, tribunal_sigla, estrutura_filtro)
                         df_decisao = add_comparison_columns(df_decisao)
                         qtd_decisao = len(df_decisao)
+                elif not df_anpp.empty:
+                    df_decisao = enrich_decision_proxy_dataframe(df_anpp.copy())
+                    df_decisao = add_comparison_columns(df_decisao)
+                    qtd_decisao = len(df_decisao)
 
+                if not usar_numero_processo:
                     if busca_tema_direto and not df_anpp.empty:
                         top_codigos = top_codigos_dataframe(df_anpp)
                         top_orgaos_sigla = top_orgaos_julgadores_dataframe(df_anpp)
@@ -4547,12 +5240,22 @@ def render() -> None:
     tema_escolhido = ""
     assuntos_distintos = derived_state["assuntos_distintos"]
     total_assuntos = int(derived_state.get("total_assuntos", 0) or 0)
+    raw_hits = st.session_state.get("hits", [])
+    valor_causa_info = valor_causa_summary(df_anpp)
 
     st.subheader("Resumo")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Registros", f"{len(df_anpp):,}".replace(",", "."))
     c2.metric("Temas diferentes", str(total_assuntos))
     c3.metric("Orgaos julgadores", str(df_anpp["orgao_julgador"].nunique()))
+    if int(valor_causa_info["com_valor"] or 0) > 0:
+        c4.metric(
+            "Valor da causa",
+            format_int_br(valor_causa_info["com_valor"]),
+            delta=f"{valor_causa_info['cobertura']:.1f}% da amostra",
+        )
+    else:
+        c4.metric("Valor da causa", "Sem base")
 
     if estrutura_filtro != "Todos" and not usar_numero_processo:
         st.caption(
@@ -4572,17 +5275,191 @@ def render() -> None:
     for aviso in avisos_consulta:
         st.warning(aviso)
 
-    if not assuntos_distintos.empty:
+    st.markdown("**Navegacao dos resultados**")
+    area_resultados = st.radio(
+        "Area dos resultados",
+        options=[
+            "Visao geral",
+            "Processos",
+            "Temas e estrategia",
+            "Estatisticas",
+            "Mapa do tribunal",
+            "Downloads",
+        ],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if not assuntos_distintos.empty and area_resultados == "Visao geral":
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
 
-    if usar_numero_processo:
+    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao)
+    df_export = df_anpp.copy().reset_index(drop=True)
+    if not process_summary_df.empty and len(process_summary_df) == len(df_export):
+        df_export["resumo_processo"] = process_summary_df["resumo_processo"].tolist()
+    else:
+        df_export["resumo_processo"] = ""
+
+    if not process_summary_df.empty and area_resultados in {"Visao geral", "Processos"}:
+        tribunal_consulta_sigla = str(
+            last_query_context.get("tribunal_sigla")
+            or st.session_state.get("sigla_mapa")
+            or ""
+        ).strip().upper()
+        process_preview_df = process_summary_df.head(400).copy()
+        process_filter_text = ""
+        if area_resultados == "Processos":
+            process_filter_text = st.text_input(
+                "Buscar processo na amostra atual",
+                key="busca_local_processos",
+                placeholder="Numero, classe, orgao, tema ou trecho do resumo",
+                help="Filtra os primeiros 400 processos exibidos pela consulta atual.",
+            )
+            process_preview_df = filter_process_summary_dataframe(process_preview_df, process_filter_text)
+            pf1, pf2, pf3 = st.columns(3)
+            pf1.metric("Processos visiveis", format_int_br(len(process_preview_df)))
+            pf2.metric(
+                "Com valor da causa",
+                format_int_br(int(process_preview_df["valor_causa"].fillna("").astype(str).str.strip().ne("").sum()))
+                if "valor_causa" in process_preview_df.columns
+                else "0",
+            )
+            pf3.metric(
+                "Com resumo",
+                format_int_br(int(process_preview_df["resumo_processo"].fillna("").astype(str).str.strip().ne("").sum())),
+            )
+            if process_filter_text and process_preview_df.empty:
+                st.info("Nenhum processo da amostra atual bateu com essa busca local.")
+        process_options = process_preview_df["numero_processo"].dropna().astype(str).str.strip().tolist()
+        process_options = [numero for numero in process_options if numero]
+
+        st.subheader("Processo em destaque")
+        st.caption(
+            "Aqui voce pode abrir um processo da amostra para leitura rapida. "
+            "Os resumos abaixo usam os metadados e os movimentos que o DataJud retornou nesta consulta."
+        )
+
+        selected_process_number = ""
+        if process_options:
+            if usar_numero_processo:
+                selected_process_number = process_options[0]
+                st.caption("Detalhe automatico do processo pesquisado por numero.")
+            else:
+                process_lookup = (
+                    process_preview_df.drop_duplicates(subset=["numero_processo"], keep="first")
+                    .set_index("numero_processo")[["classe", "orgao_julgador"]]
+                    .to_dict("index")
+                )
+                process_signature = (
+                    f"{len(process_options)}|{process_options[0]}|{process_options[-1]}|"
+                    f"{int(bool(usar_numero_processo))}"
+                )
+                process_select_key = "processo_em_destaque"
+                if st.session_state.get("processo_em_destaque_signature") != process_signature:
+                    st.session_state["processo_em_destaque_signature"] = process_signature
+                    st.session_state[process_select_key] = process_options[0]
+                elif st.session_state.get(process_select_key) not in process_options:
+                    st.session_state[process_select_key] = process_options[0]
+                selected_process_number = st.selectbox(
+                    "Escolha um processo da amostra para detalhar",
+                    options=process_options,
+                    key=process_select_key,
+                    format_func=lambda numero: build_process_option_label(
+                        numero,
+                        process_lookup.get(numero, {}).get("classe", ""),
+                        process_lookup.get(numero, {}).get("orgao_julgador", ""),
+                    ),
+                    help="A lista mostra os primeiros 400 processos visiveis da amostra atual.",
+                )
+
+        if selected_process_number:
+            process_record = find_process_record(selected_process_number, df_anpp, df_decisao)
+            raw_source = find_raw_source_for_process(selected_process_number, raw_hits)
+            process_metadata_df = build_process_metadata_dataframe(
+                process_record,
+                tribunal_consulta_sigla,
+                raw_source=raw_source,
+            )
+            public_fields_df = build_public_additional_fields_dataframe(raw_source)
+            process_timeline_df = build_movements_timeline_dataframe(process_record.get("movimentos"))
+            process_summary_text = build_process_summary_text(process_record)
+
+            col_resumo_processo, col_acesso_processo = st.columns([1.45, 1.0])
+            with col_resumo_processo:
+                st.info(process_summary_text)
+                process_tabs = st.tabs(["Ficha", "Movimentos", "Campos publicos"])
+                with process_tabs[0]:
+                    if not process_metadata_df.empty:
+                        st.dataframe(process_metadata_df, use_container_width=True, height=320)
+                with process_tabs[1]:
+                    if not process_timeline_df.empty:
+                        st.dataframe(process_timeline_df, use_container_width=True, height=280)
+                    else:
+                        st.caption(
+                            "Esta amostra nao trouxe a linha a linha dos movimentos para esse processo. "
+                            "Se quiser aprofundar um caso especifico, a busca por numero do processo e o melhor caminho."
+                        )
+                with process_tabs[2]:
+                    if isinstance(public_fields_df, pd.DataFrame) and not public_fields_df.empty:
+                        st.dataframe(public_fields_df, use_container_width=True, height=340)
+                    else:
+                        st.caption(
+                            "Nao encontrei campos publicos adicionais alem da ficha basica neste retorno."
+                        )
+
+            with col_acesso_processo:
+                st.markdown("**Acesso profissional**")
+                st.caption("Use o numero abaixo para localizar o caso nos portais oficiais.")
+                st.code(selected_process_number)
+                if tribunal_consulta_sigla:
+                    st.markdown(f"Tribunal da consulta: `{tribunal_consulta_sigla}`")
+                st.markdown(f"[Abrir Jus.br]({JUS_BR_URL})")
+                st.markdown(f"[Abrir Escritorio Digital do CNJ]({ESCRITORIO_DIGITAL_URL})")
+                st.caption(
+                    "O DataJud publico mostra metadados e movimentacoes. "
+                    "Para autos completos, pecas e PDFs, o advogado normalmente precisa entrar no portal do tribunal "
+                    "ou usar as credenciais adequadas no Jus.br/Escritorio Digital."
+                )
+                if not usar_numero_processo:
+                    st.caption(
+                        "Se quiser extrair o maximo de campos publicos deste caso, refaca a consulta pelo numero do processo."
+                    )
+
+            if isinstance(raw_source, dict) and raw_source:
+                with st.expander("Ver JSON publico retornado pelo DataJud", expanded=False):
+                    st.json(raw_source, expanded=False)
+
+        with st.expander(
+            "Ver resumos dos processos da amostra",
+            expanded=bool(area_resultados == "Processos"),
+        ):
+            st.caption(
+                "A tabela abaixo resume os primeiros 400 processos visiveis da amostra. "
+                "O download CSV inclui a coluna `resumo_processo` para todos os registros retornados."
+            )
+            st.dataframe(
+                process_preview_df[
+                    [
+                        "numero_processo",
+                        "classe",
+                        "valor_causa",
+                        "assuntos_resumo",
+                        "orgao_julgador",
+                        "resumo_processo",
+                    ]
+                ],
+                use_container_width=True,
+                height=340,
+            )
+
+    if area_resultados == "Temas e estrategia" and usar_numero_processo:
         st.info(
             "A leitura decisoria por tema aparece nas consultas por classe/tema. "
             "Quando voce busca por numero do processo, o app mostra o caso individual e nao aplica o filtro estrutural para nao esconder o processo."
         )
-    elif not isinstance(df_decisao, pd.DataFrame) or df_decisao.empty:
+    elif area_resultados == "Temas e estrategia" and (not isinstance(df_decisao, pd.DataFrame) or df_decisao.empty):
         st.info(
             "A consulta principal foi concluida, mas a leitura decisoria complementar ainda nao esta carregada nesta amostra."
         )
@@ -4637,7 +5514,7 @@ def render() -> None:
                                 ),
                             )
                             st.rerun()
-    elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+    elif area_resultados == "Temas e estrategia" and isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
         temas_decisao = derived_state["temas_decisao"]
         temas_overview = derived_state["temas_overview"]
         st.subheader("Leitura decisoria por tema")
@@ -5468,47 +6345,69 @@ def render() -> None:
         else:
             st.info("Nao encontrei temas suficientes para montar a leitura decisoria.")
 
-    st.subheader("Tabela")
-    st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
-    st.dataframe(df_view, use_container_width=True, height=350)
+    if area_resultados == "Processos":
+        st.subheader("Tabela")
+        st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
+        st.dataframe(df_view, use_container_width=True, height=350)
 
-    st.subheader("Top 100 por municipio e orgao julgador")
-    st.caption("Lista as combinacoes de municipio e orgao julgador que mais aparecem na amostra.")
-    st.dataframe(top_100_df, use_container_width=True, height=350)
+        st.subheader("Top 100 por municipio e orgao julgador")
+        st.caption("Lista as combinacoes de municipio e orgao julgador que mais aparecem na amostra.")
+        st.dataframe(top_100_df, use_container_width=True, height=350)
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("Horario")
-        st.caption("Mostra em quais horas houve mais ajuizamentos na amostra consultada.")
-        st.pyplot(fig_horario(df_anpp), clear_figure=True)
-    with col_b:
-        st.subheader("Classes com mais processos")
-        st.caption("Mostra as classes processuais mais frequentes na amostra. Nomes longos aparecem resumidos para facilitar a leitura.")
-        if isinstance(top_classes_df, pd.DataFrame) and not top_classes_df.empty:
-            st.dataframe(top_classes_df, use_container_width=True, height=320)
+    if area_resultados == "Estatisticas":
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("Horario")
+            st.caption("Mostra em quais horas houve mais ajuizamentos na amostra consultada.")
+            st.pyplot(fig_horario(df_anpp), clear_figure=True)
+        with col_b:
+            st.subheader("Classes com mais processos")
+            st.caption("Mostra as classes processuais mais frequentes na amostra. Nomes longos aparecem resumidos para facilitar a leitura.")
+            if isinstance(top_classes_df, pd.DataFrame) and not top_classes_df.empty:
+                st.dataframe(top_classes_df, use_container_width=True, height=320)
+            else:
+                st.info("Sem classes suficientes para montar esse ranking na amostra atual.")
+
+        st.subheader("Ajuizamentos mensais")
+        st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
+        st.pyplot(fig_mensal(df_mensal), clear_figure=True)
+
+        st.subheader("Valor da causa")
+        if int(valor_causa_info["com_valor"] or 0) > 0:
+            vc1, vc2, vc3, vc4 = st.columns(4)
+            vc1.metric("Processos com valor", format_int_br(valor_causa_info["com_valor"]))
+            vc2.metric("Cobertura", f"{valor_causa_info['cobertura']:.1f}%")
+            vc3.metric("Media", format_currency_br(valor_causa_info["media"]))
+            vc4.metric("Mediana", format_currency_br(valor_causa_info["mediana"]))
+            st.caption(
+                "Quando o tribunal retorna esse campo, o app mostra a distribuicao do valor da causa na amostra."
+            )
+            st.pyplot(fig_boxplot_valor_causa(df_anpp), clear_figure=True)
+            valor_classe_df = valor_causa_por_classe_dataframe(df_anpp)
+            if not valor_classe_df.empty:
+                st.markdown("**Valor da causa por classe**")
+                st.dataframe(valor_classe_df, use_container_width=True, height=320)
         else:
-            st.info("Sem classes suficientes para montar esse ranking na amostra atual.")
+            st.info(
+                "Nesta amostra, o retorno publico nao trouxe valor da causa suficiente para montar estatisticas."
+            )
 
-    st.subheader("Ajuizamentos mensais")
-    st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
-    st.pyplot(fig_mensal(df_mensal), clear_figure=True)
+        if mostrar_graficos_avancados:
+            st.subheader("Fluxo mensal")
+            st.caption("Compara ajuizados e atualizados por mes; atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
+            st.pyplot(fig_fluxo_mensal(df_mensal), clear_figure=True)
 
-    if mostrar_graficos_avancados:
-        st.subheader("Fluxo mensal")
-        st.caption("Compara ajuizados e atualizados por mes; atualizados usa 'ultima_atualizacao' como proxy de andamento/saida.")
-        st.pyplot(fig_fluxo_mensal(df_mensal), clear_figure=True)
+            st.subheader("Tempo de tramitacao por orgao")
+            st.caption("Compara a distribuicao do tempo entre ajuizamento e ultima atualizacao nos principais orgaos.")
+            st.pyplot(fig_tempo_tramitacao_boxplot(df_anpp), clear_figure=True)
 
-        st.subheader("Tempo de tramitacao por orgao")
-        st.caption("Compara a distribuicao do tempo entre ajuizamento e ultima atualizacao nos principais orgaos.")
-        st.pyplot(fig_tempo_tramitacao_boxplot(df_anpp), clear_figure=True)
+            st.subheader("Heatmap dia x hora")
+            st.caption("Mostra em que dias da semana e horarios a amostra se concentra.")
+            st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
+        else:
+            st.caption("Graficos avancados ocultos para resposta mais rapida. Ative na barra lateral.")
 
-        st.subheader("Heatmap dia x hora")
-        st.caption("Mostra em que dias da semana e horarios a amostra se concentra.")
-        st.pyplot(fig_heatmap_dia_hora(df_anpp), clear_figure=True)
-    else:
-        st.caption("Graficos avancados ocultos para resposta mais rapida. Ative na barra lateral.")
-
-    if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
+    if area_resultados == "Mapa do tribunal" and isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
         sigla_mapa = str(st.session_state.get("sigla_mapa", "")).strip().upper()
         titulo_mapa = "Mapa automatico da sigla do tribunal"
         if sigla_mapa:
@@ -5538,57 +6437,81 @@ def render() -> None:
         with col_assuntos:
             st.markdown("**Top 10 assuntos**")
             st.dataframe(top_assuntos, use_container_width=True, height=320)
+    elif area_resultados == "Mapa do tribunal":
+        st.info(
+            "O mapa automatico da sigla nao ficou disponivel nesta consulta. "
+            "Ele aparece melhor em buscas por classe ou tema."
+        )
 
-    st.subheader("Resumos automaticos")
-    st.caption(
-        "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
-        "mas nao substituem a leitura juridica do caso concreto."
-    )
-    abas_resumo = ["Amostra atual"]
-    if map_insights:
-        abas_resumo.append("Mapa da sigla")
-    if tema_insights:
-        abas_resumo.append("Tema selecionado")
-    resumo_tabs = st.tabs(abas_resumo)
-    aba_idx = 0
-    with resumo_tabs[aba_idx]:
-        for insight in sample_insights:
-            st.markdown(f"- {insight}")
-    aba_idx += 1
-    if map_insights:
+    if area_resultados == "Visao geral":
+        st.subheader("Resumos automaticos")
+        st.caption(
+            "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
+            "mas nao substituem a leitura juridica do caso concreto."
+        )
+        abas_resumo = ["Amostra atual"]
+        if map_insights:
+            abas_resumo.append("Mapa da sigla")
+        if tema_insights:
+            abas_resumo.append("Tema selecionado")
+        resumo_tabs = st.tabs(abas_resumo)
+        aba_idx = 0
         with resumo_tabs[aba_idx]:
-            for insight in map_insights:
+            for insight in sample_insights:
                 st.markdown(f"- {insight}")
         aba_idx += 1
-    if tema_insights:
-        with resumo_tabs[aba_idx]:
-            if tema_escolhido:
-                st.caption(f"Leitura guiada do tema: {tema_escolhido}")
-            for insight in tema_insights:
-                st.markdown(f"- {insight}")
+        if map_insights:
+            with resumo_tabs[aba_idx]:
+                for insight in map_insights:
+                    st.markdown(f"- {insight}")
+            aba_idx += 1
+        if tema_insights:
+            with resumo_tabs[aba_idx]:
+                if tema_escolhido:
+                    st.caption(f"Leitura guiada do tema: {tema_escolhido}")
+                for insight in tema_insights:
+                    st.markdown(f"- {insight}")
 
-    st.subheader("Downloads")
-    csv_bytes = df_anpp.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Baixar consulta_datajud.csv",
-        data=csv_bytes,
-        file_name="consulta_datajud.csv",
-        mime="text/csv",
-    )
+    if area_resultados == "Downloads":
+        st.subheader("Downloads")
+        csv_bytes = df_export.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Baixar consulta_datajud.csv",
+            data=csv_bytes,
+            file_name="consulta_datajud.csv",
+            mime="text/csv",
+        )
 
-    txt_buffer = io.StringIO()
-    for index, value in top_100.items():
-        txt_buffer.write(f"{index[0]} | {index[1]} | {value}\n")
-    st.download_button(
-        "Baixar top_100_datajud.txt",
-        data=txt_buffer.getvalue().encode("utf-8"),
-        file_name="top_100_datajud.txt",
-        mime="text/plain",
-    )
+        resumo_buffer = io.StringIO()
+        for _, row in process_summary_df.iterrows():
+            numero = str(row.get("numero_processo", "") or "").strip()
+            resumo = str(row.get("resumo_processo", "") or "").strip()
+            resumo_buffer.write(f"{numero} | {resumo}\n")
+        st.download_button(
+            "Baixar resumos_processos_datajud.txt",
+            data=resumo_buffer.getvalue().encode("utf-8"),
+            file_name="resumos_processos_datajud.txt",
+            mime="text/plain",
+        )
 
-    if st.button("Salvar artefatos na pasta do projeto"):
-        save_outputs(df_anpp, top_100)
-        st.success("Arquivos salvos na pasta do projeto.")
+        txt_buffer = io.StringIO()
+        for index, value in top_100.items():
+            txt_buffer.write(f"{index[0]} | {index[1]} | {value}\n")
+        st.download_button(
+            "Baixar top_100_datajud.txt",
+            data=txt_buffer.getvalue().encode("utf-8"),
+            file_name="top_100_datajud.txt",
+            mime="text/plain",
+        )
+
+        if st.button("Salvar artefatos na pasta do projeto"):
+            save_outputs(
+                df_anpp,
+                top_100,
+                df_export=df_export,
+                process_summary_df=process_summary_df,
+            )
+            st.success("Arquivos salvos na pasta do projeto.")
 
 
 if __name__ == "__main__":
