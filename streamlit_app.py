@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 from datetime import date, datetime, time as dt_time
 from functools import lru_cache
 import html
@@ -45,6 +46,20 @@ VALUE_CAUSE_SOURCE_FIELDS = [
     "dadosBasicos.valorCausa.valor",
     "dadosBasicos.valorAcao.valor",
 ]
+PARTY_SOURCE_FIELDS = [
+    "partes.nome",
+    "partes.polo",
+    "partes.tipoParte",
+    "partes.qualidade",
+    "poloAtivo.nome",
+    "poloAtivo.tipoParte",
+    "poloPassivo.nome",
+    "poloPassivo.tipoParte",
+    "envolvidos.nome",
+    "envolvidos.polo",
+    "participantes.nome",
+    "participantes.polo",
+]
 DEFAULT_SOURCE_FIELDS = [
     "numeroProcesso",
     "classe.codigo",
@@ -57,6 +72,7 @@ DEFAULT_SOURCE_FIELDS = [
     "grau",
     "assuntos",
     *VALUE_CAUSE_SOURCE_FIELDS,
+    *PARTY_SOURCE_FIELDS,
 ]
 DECISION_SOURCE_FIELDS = [
     "numeroProcesso",
@@ -69,6 +85,7 @@ DECISION_SOURCE_FIELDS = [
     "assuntos",
     "movimentos",
     *VALUE_CAUSE_SOURCE_FIELDS,
+    *PARTY_SOURCE_FIELDS,
 ]
 PUBLIC_PROCESS_FIELD_CANDIDATES = [
     ("Valor da causa", ["valorCausa", "valorAcao", "dadosBasicos.valorCausa", "dadosBasicos.valorAcao"]),
@@ -589,6 +606,15 @@ def format_estrutura_option(estrutura: str) -> str:
     return labels.get(estrutura, estrutura)
 
 
+def format_modo_busca_option(modo_busca: str) -> str:
+    labels = {
+        "classe": "Classe processual",
+        "tema": "Tema no tribunal",
+        "processo": "Numero do processo",
+    }
+    return labels.get(str(modo_busca or ""), str(modo_busca or ""))
+
+
 def describe_estrutura_option(estrutura: str) -> str:
     descricoes = {
         "Todos": "Analisa toda a estrutura da sigla selecionada, sem separar por instancia ou orgao especial.",
@@ -1082,6 +1108,231 @@ def format_currency_br(value: Any) -> str:
     formatted = f"{number:,.2f}"
     formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {formatted}"
+
+
+def build_query_summary_items(query_context: Any) -> list[tuple[str, str]]:
+    if not isinstance(query_context, dict) or not query_context:
+        return []
+
+    items: list[tuple[str, str]] = []
+    tribunal = str(query_context.get("tribunal_sigla", "") or "").strip().upper()
+    if tribunal:
+        items.append(("Tribunal", tribunal))
+
+    modo_busca = str(query_context.get("modo_busca", "") or "").strip()
+    if modo_busca:
+        items.append(("Modo", format_modo_busca_option(modo_busca)))
+
+    numero_processo = str(query_context.get("numero_processo", "") or "").strip()
+    if numero_processo:
+        items.append(("Processo", numero_processo))
+
+    tema_consulta = normalize_assunto_filtro(query_context.get("tema_consulta", ""))
+    classe_codigo = int(query_context.get("classe_codigo_referencia", 0) or 0)
+    busca_tema_direto = bool(query_context.get("busca_tema_direto", False))
+    if classe_codigo and not busca_tema_direto and modo_busca != "processo":
+        items.append(("Classe CNJ", str(classe_codigo)))
+    if tema_consulta:
+        items.append(("Tema", tema_consulta))
+
+    estrutura_filtro = str(query_context.get("estrutura_filtro", "Todos") or "Todos")
+    if estrutura_filtro:
+        items.append(("Estrutura", format_estrutura_option(estrutura_filtro)))
+
+    periodo_aplicado = format_periodo_aplicado(
+        query_context.get("data_inicio_consulta"),
+        query_context.get("data_fim_consulta"),
+    )
+    if periodo_aplicado:
+        items.append(("Periodo", periodo_aplicado))
+
+    tamanho_pedido = int(query_context.get("query_size_requested", 0) or 0)
+    if tamanho_pedido:
+        items.append(("Amostra pedida", format_int_br(tamanho_pedido)))
+
+    items.append(("Modo rapido", "Sim" if bool(query_context.get("modo_rapido", False)) else "Nao"))
+    return items
+
+
+def normalize_party_role(role: Any) -> str:
+    token = normalize_field_key_name(str(role or ""))
+    if not token:
+        return "nao_informado"
+    if token in {
+        "polopassivo",
+        "passivo",
+        "reu",
+        "reus",
+        "requerido",
+        "requerida",
+        "executado",
+        "executada",
+        "impetrado",
+        "impetrada",
+    }:
+        return "passivo"
+    if token in {
+        "poloativo",
+        "ativo",
+        "autor",
+        "autora",
+        "autores",
+        "requerente",
+        "exequente",
+        "impetrante",
+    }:
+        return "ativo"
+    return token
+
+
+def format_party_role_label(role: Any) -> str:
+    normalized = normalize_party_role(role)
+    labels = {
+        "ativo": "Polo ativo / autor",
+        "passivo": "Polo passivo / reu",
+        "nao_informado": "Papel nao informado",
+    }
+    if normalized in labels:
+        return labels[normalized]
+    role_text = str(role or "").strip()
+    return role_text or "Papel nao informado"
+
+
+def extract_public_party_entries(source: Any, max_depth: int = 6) -> list[dict[str, str]]:
+    candidate_container_tokens = {
+        "parte",
+        "partes",
+        "poloativo",
+        "polopassivo",
+        "envolvido",
+        "envolvidos",
+        "participante",
+        "participantes",
+        "autor",
+        "autora",
+        "reu",
+        "reus",
+        "requerente",
+        "requerido",
+    }
+    candidate_name_tokens = {
+        "nome",
+        "nomeparte",
+        "nomecompleto",
+        "nomerazaosocial",
+        "parte",
+        "pessoa",
+    }
+    candidate_role_tokens = {
+        "polo",
+        "tipoparte",
+        "papel",
+        "qualidade",
+        "tipo",
+    }
+    entries: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def maybe_add_entry(node: dict[str, Any], role_hint: str) -> None:
+        name_value = ""
+        role_value = ""
+        for key, value in node.items():
+            normalized_key = normalize_field_key_name(str(key))
+            if normalized_key in candidate_name_tokens and not is_blank_value(value):
+                name_value = str(value).strip()
+            if normalized_key in candidate_role_tokens and not is_blank_value(value):
+                role_value = str(value).strip()
+        normalized_name = str(name_value).strip()
+        if not normalized_name:
+            return
+        normalized_role = normalize_party_role(role_value or role_hint)
+        dedupe_key = (normalized_name.lower(), normalized_role)
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        entries.append(
+            {
+                "envolvido": normalized_name,
+                "papel": format_party_role_label(role_value or role_hint),
+                "papel_grupo": normalized_role,
+            }
+        )
+
+    def walk(node: Any, role_hint: str = "", inside_party_branch: bool = False, depth: int = 0) -> None:
+        if depth > max_depth or node is None:
+            return
+        if isinstance(node, dict):
+            if inside_party_branch:
+                maybe_add_entry(node, role_hint)
+            for key, value in node.items():
+                normalized_key = normalize_field_key_name(str(key))
+                next_role_hint = role_hint
+                next_inside_party_branch = inside_party_branch
+                if normalized_key in candidate_container_tokens:
+                    next_role_hint = normalized_key
+                    next_inside_party_branch = True
+                walk(
+                    value,
+                    role_hint=next_role_hint,
+                    inside_party_branch=next_inside_party_branch,
+                    depth=depth + 1,
+                )
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(
+                    item,
+                    role_hint=role_hint,
+                    inside_party_branch=inside_party_branch,
+                    depth=depth + 1,
+                )
+
+    walk(source)
+    return entries
+
+
+def build_public_parties_dataframe(source: Any) -> pd.DataFrame:
+    entries = extract_public_party_entries(source)
+    if not entries:
+        return pd.DataFrame(columns=["papel", "envolvido"])
+    return (
+        pd.DataFrame(entries)[["papel", "envolvido"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+        .head(80)
+    )
+
+
+def build_party_ranking_dataframe(hits: Any, role_filter: str | None = None) -> pd.DataFrame:
+    if not isinstance(hits, list) or not hits:
+        return pd.DataFrame(columns=["envolvido", "papel", "processos_na_amostra"])
+
+    counter: Counter[tuple[str, str]] = Counter()
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        for entry in extract_public_party_entries(source):
+            role_group = str(entry.get("papel_grupo", "") or "")
+            if role_filter and role_group != role_filter:
+                continue
+            nome = str(entry.get("envolvido", "") or "").strip()
+            papel = str(entry.get("papel", "") or "").strip()
+            if nome:
+                counter[(nome, papel)] += 1
+
+    if not counter:
+        return pd.DataFrame(columns=["envolvido", "papel", "processos_na_amostra"])
+
+    rows = [
+        {
+            "envolvido": nome,
+            "papel": papel,
+            "processos_na_amostra": int(total),
+        }
+        for (nome, papel), total in counter.most_common(20)
+    ]
+    return pd.DataFrame(rows)
 
 
 def summarize_assuntos_text(assuntos: Any, max_items: int = 3) -> str:
@@ -4582,11 +4833,7 @@ def render() -> None:
         modo_busca_sidebar = st.radio(
             "Modo de busca",
             options=["classe", "tema", "processo"],
-            format_func=lambda valor: {
-                "classe": "Classe processual",
-                "tema": "Tema no tribunal",
-                "processo": "Numero do processo",
-            }[valor],
+            format_func=format_modo_busca_option,
             help="Escolha como voce quer montar a consulta.",
         )
         if modo_busca_sidebar == "classe":
@@ -4845,23 +5092,6 @@ def render() -> None:
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         st.caption(f"URL usada: {url}")
-        with st.expander("Resumo da busca", expanded=True):
-            st.markdown(f"- Tribunal: `{tribunal_sigla.strip().upper() or 'TJMG'}`")
-            st.markdown(
-                f"- Modo: `{ {'classe': 'Classe processual', 'tema': 'Tema no tribunal', 'processo': 'Numero do processo'}[modo_busca_sidebar] }`"
-            )
-            if modo_busca_sidebar == "classe":
-                st.markdown(f"- Classe CNJ: `{classe_codigo}`")
-            elif modo_busca_sidebar == "tema":
-                st.markdown(f"- Tema: `{tema_consulta or 'Nao preenchido'}`")
-            else:
-                st.markdown(f"- Processo: `{numero_processo or 'Nao preenchido'}`")
-            if modo_busca_sidebar != "processo":
-                st.markdown(f"- Estrutura: `{format_estrutura_option(estrutura_filtro)}`")
-                if aplicar_periodo:
-                    st.markdown(f"- Periodo: `{format_periodo_aplicado(data_inicio, data_fim)}`")
-            st.markdown(f"- Amostra pedida: `{format_int_br(int(size))}`")
-            st.markdown(f"- Modo rapido: `{'Sim' if modo_rapido else 'Nao'}`")
         executar = st.button("Buscar no DataJud", use_container_width=True)
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
@@ -5154,6 +5384,7 @@ def render() -> None:
         st.session_state["tema_consulta_aplicado"] = tema_consulta_limpo
         st.session_state["avisos_consulta"] = avisos_consulta
         st.session_state["last_query_context"] = {
+            "modo_busca": modo_busca_sidebar,
             "classe_codigo": int(classe_codigo_consulta),
             "classe_codigo_referencia": int(classe_codigo),
             "url": url,
@@ -5162,11 +5393,13 @@ def render() -> None:
             "data_inicio_consulta": data_inicio_consulta,
             "data_fim_consulta": data_fim_consulta,
             "tema_consulta": tema_consulta_limpo,
+            "numero_processo": normalize_numero_processo(numero_processo),
             "query_size": int(size_int),
             "query_size_requested": int(size),
             "qtd_decisao": qtd_decisao,
             "usar_numero_processo": bool(usar_numero_processo),
             "busca_tema_direto": bool(busca_tema_direto),
+            "modo_rapido": bool(modo_rapido),
         }
         st.session_state["derived_state"] = build_query_derived_state(
             df_anpp=df_anpp,
@@ -5242,6 +5475,7 @@ def render() -> None:
     total_assuntos = int(derived_state.get("total_assuntos", 0) or 0)
     raw_hits = st.session_state.get("hits", [])
     valor_causa_info = valor_causa_summary(df_anpp)
+    query_summary_items = build_query_summary_items(last_query_context)
 
     st.subheader("Resumo")
     c1, c2, c3, c4 = st.columns(4)
@@ -5256,6 +5490,18 @@ def render() -> None:
         )
     else:
         c4.metric("Valor da causa", "Sem base")
+
+    if query_summary_items:
+        with st.expander("Resumo da busca", expanded=False):
+            left_col, right_col = st.columns(2)
+            split_index = (len(query_summary_items) + 1) // 2
+            for column, items in (
+                (left_col, query_summary_items[:split_index]),
+                (right_col, query_summary_items[split_index:]),
+            ):
+                with column:
+                    for label, value in items:
+                        st.markdown(f"- **{label}:** `{value}`")
 
     if estrutura_filtro != "Todos" and not usar_numero_processo:
         st.caption(
@@ -5275,35 +5521,24 @@ def render() -> None:
     for aviso in avisos_consulta:
         st.warning(aviso)
 
-    st.markdown("**Perfil de uso**")
-    perfil_uso = st.radio(
-        "Perfil de uso",
-        options=["advogado", "jurimetria"],
-        format_func=lambda valor: {
-            "advogado": "Modo advogado",
-            "jurimetria": "Modo jurimetria",
-        }[valor],
-        horizontal=True,
-        key="perfil_uso_resultados",
-    )
-    if perfil_uso == "advogado":
+    if usar_numero_processo:
         st.caption(
-            "Este modo prioriza leitura do caso, ficha processual, busca local na amostra e acesso aos processos."
+            "Nesta consulta por numero do processo, a plataforma prioriza a leitura do caso e deixa `Processos` como area principal."
         )
-        area_options = ["Visao geral", "Processos", "Downloads"]
-        default_area = "Processos" if usar_numero_processo else "Visao geral"
+        area_options = ["Processos", "Visao geral", "Downloads"]
+        default_area = "Processos"
     else:
         st.caption(
-            "Este modo prioriza temas, comparativos, estatisticas, mapa do tribunal e leitura estrategica da amostra."
+            "Comece por `Visao geral` e use `Processos` quando quiser ler a amostra de forma mais organizada, mesmo em buscas por classe ou tema."
         )
-        area_options = ["Visao geral", "Temas e estrategia", "Estatisticas", "Mapa do tribunal", "Downloads", "Processos"]
-        default_area = "Temas e estrategia" if (not usar_numero_processo and isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty) else "Visao geral"
+        area_options = ["Visao geral", "Processos", "Temas e estrategia", "Estatisticas", "Mapa do tribunal", "Downloads"]
+        default_area = "Visao geral"
 
     if (
-        st.session_state.get("perfil_uso_area_signature") != f"{perfil_uso}|{usar_numero_processo}"
+        st.session_state.get("area_resultados_signature") != f"{int(bool(usar_numero_processo))}|{'|'.join(area_options)}"
         or st.session_state.get("area_resultados_selecionada") not in area_options
     ):
-        st.session_state["perfil_uso_area_signature"] = f"{perfil_uso}|{usar_numero_processo}"
+        st.session_state["area_resultados_signature"] = f"{int(bool(usar_numero_processo))}|{'|'.join(area_options)}"
         st.session_state["area_resultados_selecionada"] = default_area
 
     st.markdown("**Navegacao dos resultados**")
@@ -5315,7 +5550,7 @@ def render() -> None:
         label_visibility="collapsed",
     )
 
-    if not assuntos_distintos.empty and area_resultados == "Visao geral" and perfil_uso == "jurimetria":
+    if not assuntos_distintos.empty and area_resultados == "Visao geral" and not usar_numero_processo:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
@@ -5329,7 +5564,7 @@ def render() -> None:
 
     mostrar_bloco_processos = bool(
         area_resultados == "Processos"
-        or (area_resultados == "Visao geral" and (perfil_uso == "advogado" or usar_numero_processo))
+        or (usar_numero_processo and area_resultados == "Visao geral")
     )
 
     if not process_summary_df.empty and mostrar_bloco_processos:
@@ -5413,13 +5648,14 @@ def render() -> None:
                 raw_source=raw_source,
             )
             public_fields_df = build_public_additional_fields_dataframe(raw_source)
+            public_parties_df = build_public_parties_dataframe(raw_source)
             process_timeline_df = build_movements_timeline_dataframe(process_record.get("movimentos"))
             process_summary_text = build_process_summary_text(process_record)
 
             col_resumo_processo, col_acesso_processo = st.columns([1.45, 1.0])
             with col_resumo_processo:
                 st.info(process_summary_text)
-                process_tabs = st.tabs(["Ficha", "Movimentos", "Campos publicos"])
+                process_tabs = st.tabs(["Ficha", "Movimentos", "Envolvidos", "Campos publicos"])
                 with process_tabs[0]:
                     if not process_metadata_df.empty:
                         st.dataframe(process_metadata_df, use_container_width=True, height=320)
@@ -5432,6 +5668,13 @@ def render() -> None:
                             "Se quiser aprofundar um caso especifico, a busca por numero do processo e o melhor caminho."
                         )
                 with process_tabs[2]:
+                    if isinstance(public_parties_df, pd.DataFrame) and not public_parties_df.empty:
+                        st.dataframe(public_parties_df, use_container_width=True, height=280)
+                    else:
+                        st.caption(
+                            "Neste retorno publico, nao encontrei partes ou polos identificados de forma utilizavel."
+                        )
+                with process_tabs[3]:
                     if isinstance(public_fields_df, pd.DataFrame) and not public_fields_df.empty:
                         st.dataframe(public_fields_df, use_container_width=True, height=340)
                     else:
@@ -6421,6 +6664,38 @@ def render() -> None:
             st.info(
                 "Nesta amostra, o retorno publico nao trouxe valor da causa suficiente para montar estatisticas."
             )
+
+        ranking_envolvidos_df = build_party_ranking_dataframe(raw_hits)
+        if not ranking_envolvidos_df.empty:
+            st.subheader("Ranking publico de envolvidos")
+            st.caption(
+                "Este ranking so aparece quando o retorno publico traz nomes de partes ou polos de forma utilizavel na amostra."
+            )
+            ranking_passivo_df = build_party_ranking_dataframe(raw_hits, role_filter="passivo")
+            ranking_ativo_df = build_party_ranking_dataframe(raw_hits, role_filter="ativo")
+            rp1, rp2, rp3 = st.columns(3)
+            rp1.metric("Envolvidos distintos", format_int_br(ranking_envolvidos_df["envolvido"].nunique()))
+            rp2.metric(
+                "No polo passivo",
+                format_int_br(ranking_passivo_df["envolvido"].nunique()) if not ranking_passivo_df.empty else "0",
+            )
+            rp3.metric(
+                "No polo ativo",
+                format_int_br(ranking_ativo_df["envolvido"].nunique()) if not ranking_ativo_df.empty else "0",
+            )
+            ranking_tabs = st.tabs(["Todos", "Polo passivo / reu", "Polo ativo / autor"])
+            with ranking_tabs[0]:
+                st.dataframe(ranking_envolvidos_df, use_container_width=True, height=320)
+            with ranking_tabs[1]:
+                if not ranking_passivo_df.empty:
+                    st.dataframe(ranking_passivo_df, use_container_width=True, height=320)
+                else:
+                    st.caption("Nao encontrei envolvidos publicos suficientes no polo passivo nesta amostra.")
+            with ranking_tabs[2]:
+                if not ranking_ativo_df.empty:
+                    st.dataframe(ranking_ativo_df, use_container_width=True, height=320)
+                else:
+                    st.caption("Nao encontrei envolvidos publicos suficientes no polo ativo nesta amostra.")
 
         if mostrar_graficos_avancados:
             st.subheader("Fluxo mensal")
