@@ -2298,11 +2298,23 @@ def build_process_summary_dataframe(
     for _, row in df_anpp.reset_index(drop=True).iterrows():
         numero = str(row.get("numero_processo", "") or "").strip()
         detail_row = detail_map.get(numero, row)
+        summary_record = row.copy()
+        if isinstance(detail_row, pd.Series):
+            for key, value in detail_row.items():
+                if not is_blank_value(value):
+                    summary_record[key] = value
         classe = first_non_blank(detail_row.get("classe"), row.get("classe"), "")
         orgao = first_non_blank(detail_row.get("orgao_julgador"), row.get("orgao_julgador"), "")
         grau = first_non_blank(detail_row.get("grau"), row.get("grau"), "")
         valor_causa = first_non_blank(detail_row.get("valor_causa"), row.get("valor_causa"))
-        assuntos_resumo = summarize_assuntos_text(first_non_blank(detail_row.get("assuntos"), row.get("assuntos"), []), max_items=5)
+        assuntos_resumo = summarize_assuntos_text(
+            first_non_blank(summary_record.get("assuntos"), row.get("assuntos"), []),
+            max_items=5,
+        )
+        if not assuntos_resumo:
+            assuntos_resumo = str(
+                first_non_blank(summary_record.get("assuntos_resumo"), row.get("assuntos_resumo"), "") or ""
+            ).strip()
         data_ajuizamento = first_non_blank(
             detail_row.get("data_ajuizamento"),
             row.get("data_ajuizamento"),
@@ -2313,6 +2325,11 @@ def build_process_summary_dataframe(
             row.get("ultima_atualizacao"),
             pd.NaT,
         )
+        resumo_processo = str(
+            first_non_blank(summary_record.get("resumo_processo"), row.get("resumo_processo"), "") or ""
+        ).strip()
+        if not resumo_processo:
+            resumo_processo = build_process_summary_text(summary_record)
         rows.append(
             {
                 "numero_processo": numero,
@@ -2323,12 +2340,139 @@ def build_process_summary_dataframe(
                 "assuntos_resumo": assuntos_resumo,
                 "data_ajuizamento": format_datetime_label(data_ajuizamento, include_time=False),
                 "ultima_atualizacao": format_datetime_label(ultima_atualizacao),
-                "movimentos_carregados": count_movimentos(detail_row.get("movimentos")),
-                "resumo_processo": build_process_summary_text(detail_row),
+                "movimentos_carregados": count_movimentos(summary_record.get("movimentos")),
+                "resumo_processo": resumo_processo,
             }
         )
 
     return pd.DataFrame(rows, columns=columns)
+
+
+def summarize_public_parties_text(source: Any, max_items: int = 3) -> str:
+    df_parties = build_public_parties_dataframe(source)
+    if df_parties.empty:
+        return ""
+    rows = [
+        f"{row['papel']}: {row['envolvido']}"
+        for _, row in df_parties.head(max_items).iterrows()
+        if str(row.get("papel", "") or "").strip() and str(row.get("envolvido", "") or "").strip()
+    ]
+    if not rows:
+        return ""
+    restante = max(len(df_parties) - len(rows), 0)
+    if restante > 0:
+        return f"{'; '.join(rows)} e mais {restante}"
+    return "; ".join(rows)
+
+
+def build_understanding_search_dataframe(
+    df_anpp: pd.DataFrame,
+    df_decisao: pd.DataFrame | None,
+    hits: Any,
+) -> pd.DataFrame:
+    columns = [
+        "numero_processo",
+        "classe",
+        "assuntos_resumo",
+        "orgao_julgador",
+        "desfecho",
+        "movimento_decisorio",
+        "data_decisao",
+        "pessoas_publicas",
+        "envolvidos_publicos",
+        "resumo_processo",
+    ]
+    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao)
+    if process_summary_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    detail_map: dict[str, Any] = {}
+    if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty and "numero_processo" in df_decisao.columns:
+        for _, detail_row in df_decisao.drop_duplicates(subset=["numero_processo"], keep="first").iterrows():
+            numero = normalize_numero_processo(detail_row.get("numero_processo"))
+            if numero:
+                detail_map[numero] = detail_row
+
+    source_map: dict[str, dict[str, Any]] = {}
+    if isinstance(hits, list):
+        for hit in hits:
+            numero = extract_hit_process_number(hit)
+            source = hit.get("_source", {}) if isinstance(hit, dict) else {}
+            if numero and isinstance(source, dict):
+                source_map[numero] = source
+
+    rows: list[dict[str, Any]] = []
+    for _, row in process_summary_df.iterrows():
+        numero = normalize_numero_processo(row.get("numero_processo"))
+        detail_row = detail_map.get(numero)
+        source = source_map.get(numero, {})
+        rows.append(
+            {
+                "numero_processo": str(row.get("numero_processo", "") or "").strip(),
+                "classe": str(row.get("classe", "") or "").strip(),
+                "assuntos_resumo": str(row.get("assuntos_resumo", "") or "").strip(),
+                "orgao_julgador": str(row.get("orgao_julgador", "") or "").strip(),
+                "desfecho": str(
+                    first_non_blank(
+                        detail_row.get("decisao_categoria") if detail_row is not None else "",
+                        detail_row.get("desfecho") if detail_row is not None else "",
+                        "",
+                    ) or ""
+                ).strip(),
+                "movimento_decisorio": str(
+                    first_non_blank(
+                        detail_row.get("decisao_movimento") if detail_row is not None else "",
+                        detail_row.get("movimento_decisorio") if detail_row is not None else "",
+                        "",
+                    ) or ""
+                ).strip(),
+                "data_decisao": format_datetime_label(
+                    first_non_blank(
+                        detail_row.get("decisao_data") if detail_row is not None else pd.NaT,
+                        detail_row.get("data_decisao") if detail_row is not None else pd.NaT,
+                        pd.NaT,
+                    )
+                ),
+                "pessoas_publicas": summarize_public_people_text(source, max_items=3),
+                "envolvidos_publicos": summarize_public_parties_text(source, max_items=3),
+                "resumo_processo": str(row.get("resumo_processo", "") or "").strip(),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def filter_understanding_search_dataframe(df_base: pd.DataFrame, query: str) -> pd.DataFrame:
+    if not isinstance(df_base, pd.DataFrame) or df_base.empty:
+        return pd.DataFrame(columns=getattr(df_base, "columns", []))
+    termo = normalize_search_text(query)
+    if not termo:
+        return df_base.copy()
+    tokens = [token for token in termo.split() if token]
+    if not tokens:
+        return df_base.copy()
+
+    colunas_busca = [
+        "numero_processo",
+        "classe",
+        "assuntos_resumo",
+        "orgao_julgador",
+        "desfecho",
+        "movimento_decisorio",
+        "pessoas_publicas",
+        "envolvidos_publicos",
+        "resumo_processo",
+    ]
+    colunas_ativas = [coluna for coluna in colunas_busca if coluna in df_base.columns]
+    base = df_base[colunas_ativas].fillna("").astype(str)
+    mask = base.apply(
+        lambda row: all(
+            token in " ".join(normalize_search_text(value) for value in row.tolist())
+            for token in tokens
+        ),
+        axis=1,
+    )
+    return df_base.loc[mask].copy()
 
 
 def filter_process_summary_dataframe(df_processos: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -6461,6 +6605,7 @@ def render() -> None:
                 top_codigos = pd.DataFrame()
                 top_orgaos_sigla = pd.DataFrame()
                 top_assuntos = pd.DataFrame()
+                df_mapa = pd.DataFrame()
                 df_decisao = pd.DataFrame()
                 qtd_mapa = 0
                 qtd_decisao = 0
@@ -6517,6 +6662,7 @@ def render() -> None:
 
                 if not usar_numero_processo:
                     if busca_tema_direto and not df_anpp.empty:
+                        df_mapa = df_anpp.copy()
                         top_codigos = top_codigos_dataframe(df_anpp)
                         top_orgaos_sigla = top_orgaos_julgadores_dataframe(df_anpp)
                         top_assuntos = top_assuntos_dataframe(df_anpp)
@@ -6610,6 +6756,7 @@ def render() -> None:
         st.session_state["hits"] = hits
         st.session_state["sigla_mapa"] = tribunal_sigla
         st.session_state["qtd_mapa"] = qtd_mapa
+        st.session_state["df_mapa"] = df_mapa if not usar_numero_processo else pd.DataFrame()
         st.session_state["top_codigos"] = top_codigos
         st.session_state["top_orgaos_sigla"] = top_orgaos_sigla
         st.session_state["top_assuntos"] = top_assuntos
@@ -6659,6 +6806,7 @@ def render() -> None:
     df_anpp = st.session_state["df_anpp"]
     df_mensal = st.session_state.get("df_mensal", df_anpp)
     top_100 = st.session_state["top_100"]
+    df_mapa = st.session_state.get("df_mapa", pd.DataFrame())
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
     top_orgaos_sigla = st.session_state.get("top_orgaos_sigla", pd.DataFrame())
     top_assuntos = st.session_state.get("top_assuntos", pd.DataFrame())
@@ -6803,7 +6951,7 @@ def render() -> None:
         st.caption(
             "Comece por `Visao geral` e use `Processos` quando quiser ler a amostra de forma mais organizada, mesmo em buscas por classe ou tema."
         )
-        area_options = ["Visao geral", "Processos", "Temas e estrategia", "Estatisticas", "Mapa do tribunal", "Downloads"]
+        area_options = ["Visao geral", "Processos", "Temas e estrategia", "Busca por entendimento", "Estatisticas", "Mapa do tribunal", "Downloads"]
         default_area = "Visao geral"
 
     if (
@@ -7083,7 +7231,7 @@ def render() -> None:
     df_area_decisao = df_decisao.copy() if isinstance(df_decisao, pd.DataFrame) else pd.DataFrame()
     raw_hits_area = list(raw_hits) if isinstance(raw_hits, list) else []
     area_suporta_refino_jurimetria = bool(
-        not usar_numero_processo and area_resultados in {"Temas e estrategia", "Estatisticas"}
+        not usar_numero_processo and area_resultados in {"Temas e estrategia", "Busca por entendimento", "Estatisticas"}
     )
 
     if area_suporta_refino_jurimetria and not classe_scope_df.empty:
@@ -8227,6 +8375,177 @@ def render() -> None:
         else:
             st.info("Nao encontrei temas suficientes para montar a leitura decisoria.")
 
+    if area_resultados == "Busca por entendimento":
+        st.subheader("Busca por entendimento")
+        st.caption(
+            "Este painel funciona como uma busca jurisprudencial aproximada dentro da amostra atual do DataJud. "
+            "Ele cruza tema, desfecho, movimento decisorio, orgao e sinais publicos dos processos retornados."
+        )
+        if not isinstance(df_area_decisao, pd.DataFrame) or df_area_decisao.empty:
+            st.info(
+                "A leitura decisoria complementar ainda nao esta disponivel neste recorte. "
+                "Quando a base vier com movimentos suficientes, este painel aparece com filtros e resultados."
+            )
+        else:
+            entendimento_df = build_understanding_search_dataframe(df_area_anpp, df_area_decisao, raw_hits_area)
+            if entendimento_df.empty:
+                st.info(
+                    "Ainda nao encontrei base suficiente para montar a busca por entendimento neste recorte."
+                )
+            else:
+                et1, et2, et3 = st.columns([1.3, 1.0, 1.0])
+                with et1:
+                    entendimento_query = st.text_input(
+                        "Buscar entendimento na amostra",
+                        key="busca_entendimento_query",
+                        placeholder="Ex.: telefonia, liminar, acordo, dano moral, improcedente",
+                        help="A busca local olha tema, classe, orgao, desfecho, movimento decisorio, partes e resumo do processo.",
+                    )
+                with et2:
+                    desfecho_options = ["Todos os desfechos"] + sorted(
+                        {
+                            str(valor).strip()
+                            for valor in entendimento_df["desfecho"].fillna("").astype(str).tolist()
+                            if str(valor).strip()
+                        }
+                    )
+                    entendimento_desfecho = st.selectbox(
+                        "Desfecho",
+                        options=desfecho_options,
+                        key="busca_entendimento_desfecho",
+                    )
+                with et3:
+                    movimento_options = ["Todos os movimentos"] + (
+                        entendimento_df["movimento_decisorio"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .replace("", pd.NA)
+                        .dropna()
+                        .value_counts()
+                        .head(30)
+                        .index.tolist()
+                    )
+                    entendimento_movimento = st.selectbox(
+                        "Movimento decisorio",
+                        options=movimento_options,
+                        key="busca_entendimento_movimento",
+                    )
+
+                entendimento_filtrado_df = filter_understanding_search_dataframe(entendimento_df, entendimento_query)
+                if entendimento_desfecho != "Todos os desfechos":
+                    entendimento_filtrado_df = entendimento_filtrado_df[
+                        entendimento_filtrado_df["desfecho"].fillna("").astype(str).str.strip() == entendimento_desfecho
+                    ].copy()
+                if entendimento_movimento != "Todos os movimentos":
+                    entendimento_filtrado_df = entendimento_filtrado_df[
+                        entendimento_filtrado_df["movimento_decisorio"].fillna("").astype(str).str.strip() == entendimento_movimento
+                    ].copy()
+
+                em1, em2, em3, em4 = st.columns(4)
+                em1.metric("Resultados", format_int_br(len(entendimento_filtrado_df)))
+                em2.metric(
+                    "Com desfecho",
+                    format_int_br(
+                        int(entendimento_filtrado_df["desfecho"].fillna("").astype(str).str.strip().ne("").sum())
+                    ),
+                )
+                em3.metric(
+                    "Orgaos distintos",
+                    format_int_br(entendimento_filtrado_df["orgao_julgador"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()),
+                )
+                em4.metric(
+                    "Com pessoas publicas",
+                    format_int_br(
+                        int(entendimento_filtrado_df["pessoas_publicas"].fillna("").astype(str).str.strip().ne("").sum())
+                    ),
+                )
+
+                if entendimento_filtrado_df.empty:
+                    st.info("Nenhum processo da leitura decisoria atual bateu com esse entendimento.")
+                else:
+                    entendimento_desfechos_df = (
+                        entendimento_filtrado_df["desfecho"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+                    entendimento_desfechos_df = entendimento_desfechos_df[entendimento_desfechos_df != ""]
+                    entendimento_desfechos_df = (
+                        entendimento_desfechos_df.value_counts()
+                        .rename_axis("desfecho")
+                        .reset_index(name="quantidade")
+                    )
+                    entendimento_movimentos_df = (
+                        entendimento_filtrado_df["movimento_decisorio"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+                    entendimento_movimentos_df = entendimento_movimentos_df[entendimento_movimentos_df != ""]
+                    entendimento_movimentos_df = (
+                        entendimento_movimentos_df.value_counts()
+                        .rename_axis("movimento")
+                        .reset_index(name="quantidade")
+                    )
+
+                    eg1, eg2 = st.columns(2)
+                    with eg1:
+                        st.pyplot(
+                            fig_desfechos_tema(
+                                entendimento_desfechos_df,
+                                title="Desfechos do entendimento filtrado",
+                            ),
+                            clear_figure=True,
+                        )
+                    with eg2:
+                        st.pyplot(
+                            fig_rank_horizontal(
+                                entendimento_movimentos_df,
+                                "movimento",
+                                title="Movimentos decisorios do entendimento filtrado",
+                                color="#F28E2B",
+                                max_chars=44,
+                                empty_message="Sem movimentos decisorios suficientes para este filtro.",
+                            ),
+                            clear_figure=True,
+                        )
+
+                    st.caption(
+                        "A tabela abaixo organiza a amostra lida como entendimento aproximado. "
+                        "Use junto com tema, desfecho, movimento e orgao para aproximar um padrao do tribunal."
+                    )
+                    st.dataframe(
+                        entendimento_filtrado_df[
+                            [
+                                "numero_processo",
+                                "classe",
+                                "assuntos_resumo",
+                                "orgao_julgador",
+                                "desfecho",
+                                "movimento_decisorio",
+                                "data_decisao",
+                                "pessoas_publicas",
+                            ]
+                        ],
+                        use_container_width=True,
+                        height=360,
+                    )
+
+                    with st.expander("Ver detalhes e resumos dos resultados", expanded=False):
+                        st.dataframe(
+                            entendimento_filtrado_df[
+                                [
+                                    "numero_processo",
+                                    "envolvidos_publicos",
+                                    "pessoas_publicas",
+                                    "resumo_processo",
+                                ]
+                            ],
+                            use_container_width=True,
+                            height=320,
+                        )
+
     if area_resultados == "Processos":
         st.subheader("Tabela")
         st.caption("Tabela simplificada (amostra de ate 400 linhas) para evitar travamento.")
@@ -8731,6 +9050,11 @@ def render() -> None:
 
     if area_resultados == "Mapa do tribunal" and isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
         sigla_mapa = str(st.session_state.get("sigla_mapa", "")).strip().upper()
+        df_mapa_base = df_mapa.copy() if isinstance(df_mapa, pd.DataFrame) and not df_mapa.empty else df_anpp.copy()
+        top_classes_mapa = top_classes_dataframe(df_mapa_base, max_items=8)
+        top_assuntos_mapa = top_assuntos_dataframe(df_mapa_base, max_items=8)
+        top_orgaos_mapa = top_orgaos_julgadores_dataframe(df_mapa_base, max_items=8)
+        serie_mensal_mapa = monthly_counts(df_mapa_base, max_meses=12)
         titulo_mapa = "Mapa automatico da sigla do tribunal"
         if sigla_mapa:
             titulo_mapa = f"Mapa automatico da sigla do tribunal ({sigla_mapa})"
@@ -8746,6 +9070,60 @@ def render() -> None:
             st.caption(mensagem_mapa)
         else:
             st.caption("Os rankings abaixo se referem a sigla do tribunal selecionado.")
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric(
+            "Acao/classe lider",
+            shorten_display_label(str(top_classes_mapa.iloc[0]["classe"]), max_chars=28) if not top_classes_mapa.empty else "Sem base",
+            delta=(
+                f"{format_int_br(int(top_classes_mapa.iloc[0]['quantidade']))} processos"
+                if not top_classes_mapa.empty
+                else None
+            ),
+        )
+        mc2.metric(
+            "Tema lider",
+            shorten_display_label(str(top_assuntos_mapa.iloc[0]["assunto"]), max_chars=28) if not top_assuntos_mapa.empty else "Sem base",
+            delta=(
+                f"{format_int_br(int(top_assuntos_mapa.iloc[0]['quantidade']))} ocorrencias"
+                if not top_assuntos_mapa.empty
+                else None
+            ),
+        )
+        mc3.metric(
+            "Orgao lider",
+            shorten_display_label(str(top_orgaos_mapa.iloc[0]["orgao_julgador"]), max_chars=28) if not top_orgaos_mapa.empty else "Sem base",
+            delta=(
+                str(top_orgaos_mapa.iloc[0]["participacao"])
+                if not top_orgaos_mapa.empty and "participacao" in top_orgaos_mapa.columns
+                else None
+            ),
+        )
+        mc4.metric(
+            "Pico mensal",
+            (
+                f"{serie_mensal_mapa.idxmax().strftime('%m/%Y')} ({format_int_br(int(serie_mensal_mapa.max()))})"
+                if not serie_mensal_mapa.empty
+                else "Sem base"
+            ),
+        )
+
+        mg1, mg2 = st.columns(2)
+        with mg1:
+            st.pyplot(fig_mensal(df_mapa_base), clear_figure=True)
+        with mg2:
+            st.pyplot(
+                fig_rank_horizontal(
+                    top_classes_mapa,
+                    "classe",
+                    title="Acoes/classes mais comuns neste tribunal",
+                    color="#4E79A7",
+                    max_chars=42,
+                    empty_message="Sem classes suficientes para este recorte do tribunal.",
+                ),
+                clear_figure=True,
+            )
+
         top_codigos_plot = top_codigos.copy()
         if not top_codigos_plot.empty:
             top_codigos_plot["label"] = top_codigos_plot.apply(
@@ -8758,7 +9136,7 @@ def render() -> None:
             )
         col_codigos, col_orgaos, col_assuntos = st.columns(3)
         with col_codigos:
-            st.markdown("**Top 10 codigos**")
+            st.markdown("**Top 10 codigos e classes**")
             st.pyplot(
                 fig_rank_horizontal(
                     top_codigos_plot,
@@ -8799,8 +9177,93 @@ def render() -> None:
                 ),
                 clear_figure=True,
             )
+
+        if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+            decision_map_summary = decision_overview_summary(df_decisao)
+            decision_map_by_orgao = decision_by_orgao_dataframe(df_decisao, max_orgaos=10)
+            decision_map_mix = decision_outcome_mix_by_orgao_dataframe(df_decisao, max_orgaos=8, max_desfechos=5)
+            st.markdown("**Leitura decisoria do tribunal no recorte atual**")
+            st.caption(
+                "Este bloco usa a camada decisoria da consulta atual para mostrar como o tribunal esta se comportando em desfechos e movimentos mais recorrentes."
+            )
+            md1, md2, md3, md4 = st.columns(4)
+            desfecho_map = str(decision_map_summary.get("desfecho_lider", "") or "").strip()
+            md1.metric(
+                "Desfecho mais comum",
+                "Nao classificado" if desfecho_map == CATEGORIA_NAO_CLASSIFICADA else shorten_display_label(desfecho_map or "Sem base", max_chars=24),
+                delta=(
+                    f"{format_int_br(int(decision_map_summary.get('desfecho_lider_qtd', 0) or 0))} casos"
+                    if desfecho_map
+                    else None
+                ),
+            )
+            md2.metric(
+                "Cobertura de desfecho",
+                f"{float(decision_map_summary['cobertura'].get('cobertura_desfecho', 0.0) or 0.0):.1f}%",
+            )
+            md3.metric(
+                "Movimento decisorio lider",
+                shorten_display_label(str(decision_map_summary.get("movimento_lider", "") or "").strip() or "Sem base", max_chars=24),
+                delta=(
+                    f"{format_int_br(int(decision_map_summary.get('movimento_lider_qtd', 0) or 0))} ocorrencias"
+                    if str(decision_map_summary.get("movimento_lider", "") or "").strip()
+                    else None
+                ),
+            )
+            md4.metric(
+                "Favorabilidade estimada",
+                str(decision_map_summary["favorabilidade"].get("leitura_favorabilidade", "Sem base")),
+            )
+
+            mdg1, mdg2 = st.columns(2)
+            with mdg1:
+                st.pyplot(
+                    fig_desfechos_tema(
+                        decision_map_summary["desfechos_df"],
+                        title="Desfechos mais comuns neste recorte do tribunal",
+                    ),
+                    clear_figure=True,
+                )
+            with mdg2:
+                st.pyplot(
+                    fig_rank_horizontal(
+                        decision_map_summary["movimentos_df"],
+                        "movimento",
+                        title="Movimentos decisorios mais comuns neste recorte",
+                        color="#F28E2B",
+                        max_chars=44,
+                        empty_message="Sem movimentos decisorios suficientes neste recorte do tribunal.",
+                    ),
+                    clear_figure=True,
+                )
+
+            mdg3, mdg4 = st.columns(2)
+            with mdg3:
+                st.pyplot(
+                    fig_base_classificada_por_orgao(
+                        decision_map_by_orgao,
+                        titulo="Base com desfecho classificado por orgao do tribunal",
+                        eixo_label="Orgao julgador",
+                    ),
+                    clear_figure=True,
+                )
+            with mdg4:
+                st.pyplot(
+                    fig_desfechos_por_orgao(
+                        decision_map_mix,
+                        titulo="Composicao dos desfechos por orgao do tribunal",
+                        eixo_label="Orgao julgador",
+                    ),
+                    clear_figure=True,
+                )
         with st.expander("Ver tabelas detalhadas do mapa", expanded=False):
-            mapa_tab1, mapa_tab2, mapa_tab3 = st.tabs(["Codigos", "Orgaos", "Assuntos"])
+            mapa_tab_labels = ["Codigos", "Orgaos", "Assuntos"]
+            if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+                mapa_tab_labels.extend(["Desfechos", "Movimentos decisorios"])
+            mapa_tabs = st.tabs(mapa_tab_labels)
+            mapa_tab1 = mapa_tabs[0]
+            mapa_tab2 = mapa_tabs[1]
+            mapa_tab3 = mapa_tabs[2]
             with mapa_tab1:
                 st.dataframe(top_codigos, use_container_width=True, height=320)
             with mapa_tab2:
@@ -8810,6 +9273,11 @@ def render() -> None:
                     st.info("Sem base suficiente para ranquear orgaos julgadores neste mapa.")
             with mapa_tab3:
                 st.dataframe(top_assuntos, use_container_width=True, height=320)
+            if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+                with mapa_tabs[3]:
+                    st.dataframe(decision_map_summary["desfechos_df"], use_container_width=True, height=320)
+                with mapa_tabs[4]:
+                    st.dataframe(decision_map_summary["movimentos_df"], use_container_width=True, height=320)
     elif area_resultados == "Mapa do tribunal":
         st.info(
             "O mapa automatico da sigla nao ficou disponivel nesta consulta. "
