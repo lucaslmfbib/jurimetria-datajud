@@ -239,6 +239,86 @@ MOVIMENTO_NAO_DECISORIO_HINTS = (
     "redistribu",
     "baixa",
     "andamento",
+    "audiencia",
+    "sessao de conciliacao",
+    "audiencia de conciliacao",
+    "tentativa de conciliacao",
+)
+
+PROCESS_DISTRIBUICAO_HINTS = (
+    "distribu",
+    "autua",
+    "ajuiz",
+    "protocolo",
+    "cadastrado",
+)
+
+PROCESS_CITACAO_HINTS = (
+    "citac",
+    "intimac",
+    "notific",
+    "mandado",
+    "ciencia",
+    "publicacao",
+)
+
+PROCESS_AUDIENCIA_HINTS = (
+    "audien",
+    "sessao",
+    "instrucao",
+)
+
+PROCESS_CONCLUSAO_HINTS = (
+    "conclus",
+    "mesa para julgamento",
+    "gabinete",
+)
+
+PROCESS_RECURSO_HINTS = (
+    "apelac",
+    "agravo",
+    "embarg",
+    "recurso",
+    "contrarrazo",
+    "razoes recursais",
+    "impugn",
+)
+
+PROCESS_CUMPRIMENTO_HINTS = (
+    "cumprimento",
+    "execucao",
+    "penhora",
+    "bloqueio",
+    "sisbajud",
+    "renajud",
+    "bacenjud",
+    "expropri",
+)
+
+PROCESS_SUSPENSAO_HINTS = (
+    "suspens",
+    "sobrest",
+    "paralis",
+)
+
+PROCESS_TERMINAL_HINTS = (
+    "arquiv",
+    "baixa",
+    "extinc",
+    "transito em julgado",
+    "transitado em julgado",
+)
+
+PROCESS_MILESTONE_RULES = (
+    ("terminal", "Baixa/arquivamento", PROCESS_TERMINAL_HINTS),
+    ("suspensao", "Suspensao/sobrestamento", PROCESS_SUSPENSAO_HINTS),
+    ("recurso", "Recurso/impugnacao", PROCESS_RECURSO_HINTS),
+    ("cumprimento", "Cumprimento/execucao", PROCESS_CUMPRIMENTO_HINTS),
+    ("decisao", "Decisao/sentenca/acordao", ()),
+    ("conclusao", "Conclusao para analise", PROCESS_CONCLUSAO_HINTS),
+    ("audiencia", "Audiencia/instrucao", PROCESS_AUDIENCIA_HINTS),
+    ("citacao", "Citacao/intimacao", PROCESS_CITACAO_HINTS),
+    ("distribuicao", "Distribuicao/autuacao", PROCESS_DISTRIBUICAO_HINTS),
 )
 
 CATEGORIA_NAO_CLASSIFICADA = "Decisao identificada, mas nao classificada"
@@ -328,6 +408,7 @@ POLARIDADE_DESFECHO_MAP = {
     "Nao conhecido/Prejudicado": POLARIDADE_NEUTRA,
     "ANPP homologado/admitido": POLARIDADE_FAVORAVEL,
     "ANPP nao homologado/rejeitado": POLARIDADE_DESFAVORAVEL,
+    "Acordo/Conciliacao": POLARIDADE_NEUTRA,
     CATEGORIA_NAO_CLASSIFICADA: POLARIDADE_INDEFINIDA,
 }
 
@@ -1418,6 +1499,35 @@ def build_public_person_entries(source: Any) -> list[dict[str, str]]:
     return rows
 
 
+def build_public_people_dataframe(source: Any) -> pd.DataFrame:
+    entries = build_public_person_entries(source)
+    if not entries:
+        return pd.DataFrame(columns=["papel", "nome"])
+    return (
+        pd.DataFrame(entries)[["papel", "nome"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+        .head(40)
+    )
+
+
+def summarize_public_people_text(source: Any, max_items: int = 3) -> str:
+    df_people = build_public_people_dataframe(source)
+    if df_people.empty:
+        return ""
+    rows = [
+        f"{row['papel']}: {row['nome']}"
+        for _, row in df_people.head(max_items).iterrows()
+        if str(row.get("papel", "") or "").strip() and str(row.get("nome", "") or "").strip()
+    ]
+    if not rows:
+        return ""
+    restante = max(len(df_people) - len(rows), 0)
+    if restante > 0:
+        return f"{'; '.join(rows)} e mais {restante}"
+    return "; ".join(rows)
+
+
 def build_public_person_ranking_dataframe(hits: Any, role_filter: str | None = None) -> pd.DataFrame:
     if not isinstance(hits, list) or not hits:
         return pd.DataFrame(columns=["nome", "papel", "processos_na_amostra"])
@@ -1462,7 +1572,10 @@ def build_public_person_options_dataframe(hits: Any, max_items: int = 40) -> pd.
     return base[["nome", "papel", "processos_na_amostra", "label"]]
 
 
-def build_process_analysis_insights(record: Any) -> list[str]:
+def build_process_analysis_insights(
+    record: Any,
+    raw_source: dict[str, Any] | None = None,
+) -> list[str]:
     if record is None or len(record) == 0:
         return []
 
@@ -1522,7 +1635,456 @@ def build_process_analysis_insights(record: Any) -> list[str]:
         insights.append(
             f"O primeiro desfecho proxy identificado apareceu apos `{format_duration_label(record.get('dias_ate_decisao_proxy'))}`."
         )
+    if isinstance(raw_source, dict) and raw_source:
+        pessoas_publicas = summarize_public_people_text(raw_source, max_items=3)
+        if pessoas_publicas:
+            insights.append(
+                f"O retorno publico tambem identificou atores nomeados do julgamento/relatoria: `{pessoas_publicas}`."
+            )
     return insights
+
+
+def build_process_movement_rows(movimentos: Any) -> list[dict[str, Any]]:
+    if not isinstance(movimentos, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for idx, movimento in enumerate(movimentos):
+        if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
+            continue
+        codigo = movimento[0] if len(movimento) > 0 else ""
+        nome = str(movimento[1] or "").strip()
+        data_hora = to_sao_paulo_datetime(movimento[2]) if len(movimento) > 2 else pd.NaT
+        if not nome and pd.isna(data_hora):
+            continue
+        rows.append(
+            {
+                "ordem_original": idx,
+                "codigo": "" if is_blank_value(codigo) else str(codigo),
+                "movimento": nome,
+                "data_hora": data_hora,
+                "movimento_normalizado": normalize_search_text(nome),
+            }
+        )
+    return rows
+
+
+def sorted_process_movement_rows(rows: list[dict[str, Any]], reverse: bool = False) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    with_date = [row for row in rows if pd.notna(row.get("data_hora"))]
+    without_date = [row for row in rows if pd.isna(row.get("data_hora"))]
+    with_date_sorted = sorted(
+        with_date,
+        key=lambda row: (row.get("data_hora"), int(row.get("ordem_original", 0))),
+        reverse=reverse,
+    )
+    without_date_sorted = sorted(
+        without_date,
+        key=lambda row: int(row.get("ordem_original", 0)),
+        reverse=reverse,
+    )
+    return with_date_sorted + without_date_sorted
+
+
+def classify_process_milestone_name(nome: Any) -> tuple[str, str]:
+    nome_texto = str(nome or "").strip()
+    text = normalize_search_text(nome_texto)
+    if not text:
+        return "", ""
+
+    for key, label, patterns in PROCESS_MILESTONE_RULES:
+        if key == "decisao":
+            if is_decisive_movement_name(nome_texto):
+                return key, label
+            continue
+        if any(pattern in text for pattern in patterns):
+            return key, label
+    return "", ""
+
+
+def find_process_movement_by_milestone(
+    rows: list[dict[str, Any]],
+    milestone_key: str,
+    latest: bool = False,
+) -> dict[str, Any] | None:
+    ordered_rows = sorted_process_movement_rows(rows, reverse=latest)
+    for row in ordered_rows:
+        row_key, _ = classify_process_milestone_name(row.get("movimento"))
+        if row_key == milestone_key:
+            return row
+    return None
+
+
+def build_process_milestones_dataframe(record: Any) -> pd.DataFrame:
+    columns = ["marco", "data", "movimento", "codigo"]
+    if record is None or len(record) == 0:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    data_ajuizamento = to_sao_paulo_datetime(record.get("data_ajuizamento"))
+    if pd.notna(data_ajuizamento):
+        rows.append(
+            {
+                "ordem": 0,
+                "marco": "Ajuizamento",
+                "data": format_datetime_label(data_ajuizamento, include_time=False),
+                "movimento": "Data basica do processo",
+                "codigo": "",
+            }
+        )
+
+    movement_rows = build_process_movement_rows(record.get("movimentos"))
+    milestone_order = [
+        "citacao",
+        "audiencia",
+        "conclusao",
+        "decisao",
+        "recurso",
+        "cumprimento",
+        "suspensao",
+        "terminal",
+    ]
+    for ordem, milestone_key in enumerate(milestone_order, start=1):
+        movement = find_process_movement_by_milestone(movement_rows, milestone_key, latest=False)
+        if not movement:
+            continue
+        _, label = classify_process_milestone_name(movement.get("movimento"))
+        rows.append(
+            {
+                "ordem": ordem,
+                "marco": label,
+                "data": format_datetime_label(movement.get("data_hora")),
+                "movimento": str(movement.get("movimento", "") or "").strip(),
+                "codigo": str(movement.get("codigo", "") or "").strip(),
+            }
+        )
+
+    ultima_atualizacao = to_sao_paulo_datetime(record.get("ultima_atualizacao"))
+    _, ultimo_movimento_nome, _ = latest_movement_entry(record.get("movimentos"))
+    if pd.notna(ultima_atualizacao) or ultimo_movimento_nome:
+        rows.append(
+            {
+                "ordem": 99,
+                "marco": "Ultima atualizacao",
+                "data": format_datetime_label(ultima_atualizacao),
+                "movimento": ultimo_movimento_nome or "Ultimo movimento carregado",
+                "codigo": "",
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    df_marcos = pd.DataFrame(rows)
+    df_marcos = (
+        df_marcos.drop_duplicates(subset=["marco", "data", "movimento"], keep="first")
+        .sort_values("ordem")
+        .drop(columns=["ordem"], errors="ignore")
+        .reset_index(drop=True)
+    )
+    return df_marcos[columns]
+
+
+def extract_raw_movements(source: Any) -> list[dict[str, Any]]:
+    movimentos = source.get("movimentos") if isinstance(source, dict) else None
+    if not isinstance(movimentos, list):
+        return []
+    return [movimento for movimento in movimentos if isinstance(movimento, dict)]
+
+
+def movement_complements_text(movimento: Any) -> str:
+    complementos = movimento.get("complementosTabelados") if isinstance(movimento, dict) else None
+    if not isinstance(complementos, list):
+        return ""
+
+    rows: list[str] = []
+    for complemento in complementos:
+        if not isinstance(complemento, dict):
+            continue
+        descricao = str(
+            first_non_blank(
+                complemento.get("descricao"),
+                complemento.get("nome"),
+                "",
+            ) or ""
+        ).strip()
+        valor_nome = str(
+            first_non_blank(
+                complemento.get("nome"),
+                complemento.get("valor"),
+                "",
+            ) or ""
+        ).strip()
+        if descricao and valor_nome and normalize_search_text(descricao) != normalize_search_text(valor_nome):
+            rows.append(f"{descricao}: {valor_nome}")
+        elif valor_nome:
+            rows.append(valor_nome)
+        elif descricao:
+            rows.append(descricao)
+    return "; ".join(rows[:6])
+
+
+def build_decision_events_dataframe(
+    raw_source: dict[str, Any] | None = None,
+    fallback_movimentos: Any = None,
+    max_items: int = 25,
+) -> pd.DataFrame:
+    columns = ["data_hora", "categoria_proxy", "movimento", "orgao", "complementos"]
+    rows: list[dict[str, Any]] = []
+
+    raw_movements = extract_raw_movements(raw_source) if isinstance(raw_source, dict) else []
+    if raw_movements:
+        for idx, movimento in enumerate(raw_movements):
+            nome = str(movimento.get("nome", "") or "").strip()
+            if not nome or not is_decisive_movement_name(nome):
+                continue
+            data_hora = to_sao_paulo_datetime(movimento.get("dataHora"))
+            orgao = str(
+                first_non_blank(
+                    deep_get_path(movimento, "orgaoJulgador.nomeOrgao"),
+                    deep_get_path(movimento, "orgaoJulgador.nome"),
+                    "",
+                ) or ""
+            ).strip()
+            complementos = movement_complements_text(movimento)
+            categoria_proxy = classify_decision_outcome_with_context(nome, complementos) or CATEGORIA_NAO_CLASSIFICADA
+            rows.append(
+                {
+                    "ordem": idx,
+                    "data_ordem": data_hora,
+                    "data_hora": format_datetime_label(data_hora),
+                    "categoria_proxy": categoria_proxy,
+                    "movimento": nome,
+                    "orgao": orgao,
+                    "complementos": complementos,
+                }
+            )
+    elif isinstance(fallback_movimentos, list):
+        for idx, movimento in enumerate(fallback_movimentos):
+            if not isinstance(movimento, (list, tuple)) or len(movimento) < 2:
+                continue
+            nome = str(movimento[1] or "").strip()
+            if not nome or not is_decisive_movement_name(nome):
+                continue
+            data_hora = movimento[2] if len(movimento) > 2 else pd.NaT
+            rows.append(
+                {
+                    "ordem": idx,
+                    "data_ordem": data_hora,
+                    "data_hora": format_datetime_label(data_hora),
+                    "categoria_proxy": classify_decision_outcome_with_context(nome) or CATEGORIA_NAO_CLASSIFICADA,
+                    "movimento": nome,
+                    "orgao": "",
+                    "complementos": "",
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    df_decisoes = pd.DataFrame(rows)
+    df_decisoes = df_decisoes.sort_values(
+        by=["data_ordem", "ordem"],
+        ascending=[False, False],
+        na_position="last",
+    ).drop(columns=["ordem", "data_ordem"], errors="ignore")
+    return df_decisoes.reset_index(drop=True).head(max_items)[columns]
+
+
+def build_process_decision_summary_text(
+    record: Any,
+    raw_source: dict[str, Any] | None = None,
+) -> str:
+    decisoes_df = build_decision_events_dataframe(
+        raw_source=raw_source,
+        fallback_movimentos=record.get("movimentos") if record is not None else None,
+        max_items=8,
+    )
+    status = build_process_status_overview(record)
+    if decisoes_df.empty:
+        ultimo_movimento = str(status.get("ultimo_movimento", "") or "").strip()
+        if ultimo_movimento:
+            return (
+                "Nao encontrei texto decisorio publico suficiente no retorno, "
+                f"mas o ultimo movimento carregado foi `{ultimo_movimento}`."
+            )
+        return "Nao encontrei decisoes publicas identificaveis neste retorno da API."
+
+    ultima_decisao = decisoes_df.iloc[0]
+    categoria = str(ultima_decisao.get("categoria_proxy", "") or "").strip()
+    movimento = str(ultima_decisao.get("movimento", "") or "").strip()
+    data_hora = str(ultima_decisao.get("data_hora", "") or "").strip()
+    orgao = str(ultima_decisao.get("orgao", "") or "").strip()
+    complementos = str(ultima_decisao.get("complementos", "") or "").strip()
+
+    partes = [
+        f"O retorno publico indica `{len(decisoes_df)}` movimento(s) com perfil decisorio nesta consulta."
+    ]
+    if categoria:
+        partes.append(f"A decisao publica mais recente foi classificada como `{categoria}`.")
+    if movimento:
+        if data_hora:
+            partes.append(f"O movimento decisorio mais recente foi `{movimento}` em `{data_hora}`.")
+        else:
+            partes.append(f"O movimento decisorio mais recente foi `{movimento}`.")
+    if orgao:
+        partes.append(f"Esse registro aparece vinculado ao orgao `{orgao}`.")
+    if complementos:
+        partes.append(f"Complementos publicos desse movimento: `{complementos}`.")
+    if status.get("status") == "Em fase recursal":
+        partes.append("Depois disso, o historico ainda sugere fase recursal.")
+    elif status.get("status") == "Em cumprimento/execucao":
+        partes.append("Depois disso, o historico publico sugere fase de cumprimento ou execucao.")
+    return " ".join(partes)
+
+
+def build_process_status_overview(record: Any) -> dict[str, Any]:
+    if record is None or len(record) == 0:
+        return {
+            "status": "",
+            "fase": "",
+            "ultimo_marco": "",
+            "ultimo_movimento": "",
+            "ultimo_movimento_data": pd.NaT,
+            "alerta": "",
+            "sinais": [],
+            "status_key": "",
+        }
+
+    movement_rows = build_process_movement_rows(record.get("movimentos"))
+    latest_rows = sorted_process_movement_rows(movement_rows, reverse=True)
+    latest_row = latest_rows[0] if latest_rows else None
+
+    ultimo_movimento = str(first_non_blank(
+        latest_row.get("movimento") if isinstance(latest_row, dict) else "",
+        latest_movement_entry(record.get("movimentos"))[1],
+        "",
+    ) or "").strip()
+    ultimo_movimento_data = first_non_blank(
+        latest_row.get("data_hora") if isinstance(latest_row, dict) else pd.NaT,
+        latest_movement_entry(record.get("movimentos"))[2],
+        pd.NaT,
+    )
+    ultimo_status_key, ultimo_marco = classify_process_milestone_name(ultimo_movimento)
+
+    has_terminal = bool(find_process_movement_by_milestone(movement_rows, "terminal"))
+    has_recurso = bool(find_process_movement_by_milestone(movement_rows, "recurso"))
+    has_cumprimento = bool(find_process_movement_by_milestone(movement_rows, "cumprimento"))
+    has_suspensao = bool(find_process_movement_by_milestone(movement_rows, "suspensao"))
+    has_conclusao = bool(find_process_movement_by_milestone(movement_rows, "conclusao"))
+    has_audiencia = bool(find_process_movement_by_milestone(movement_rows, "audiencia"))
+    has_citacao = bool(find_process_movement_by_milestone(movement_rows, "citacao"))
+    decisao_categoria = str(first_non_blank(record.get("decisao_categoria"), "") or "").strip()
+    classe_texto = normalize_search_text(record.get("classe"))
+    ultimo_movimento_normalizado = normalize_search_text(ultimo_movimento)
+    remessa_recursal = any(
+        trecho in ultimo_movimento_normalizado
+        for trecho in (
+            "remetidos os autos ao tribunal",
+            "remessa ao tribunal",
+            "autos remetidos ao tribunal",
+            "distribuido por sorteio ao relator",
+            "conclusos ao relator",
+        )
+    )
+
+    if ultimo_status_key == "terminal" or decisao_categoria in {"Extincao/Arquivamento", "Extincao da punibilidade"}:
+        status = "Sinal de encerramento"
+        fase = "Baixa/arquivamento"
+        alerta = (
+            "O retorno carregado indica baixa, arquivamento ou extincao. "
+            "Vale conferir no portal oficial se houve baixa definitiva ou alguma reativacao posterior."
+        )
+    elif ultimo_status_key == "suspensao":
+        status = "Sinal de suspensao"
+        fase = "Suspensao/sobrestamento"
+        alerta = "O ultimo marco do historico sugere suspensao ou sobrestamento do caso."
+    elif ultimo_status_key == "cumprimento":
+        status = "Em cumprimento/execucao"
+        fase = "Cumprimento/execucao"
+        alerta = "O ultimo marco carregado aponta para fase executiva ou de cumprimento."
+    elif ultimo_status_key == "recurso":
+        status = "Em fase recursal"
+        fase = "Recurso/impugnacao"
+        alerta = "O ultimo marco carregado tem natureza recursal ou de impugnacao."
+    elif has_recurso and remessa_recursal:
+        status = "Em fase recursal"
+        fase = "Recurso/impugnacao"
+        alerta = (
+            "O historico mostra recurso e o ultimo movimento sugere tramitacao no tribunal ou no gabinete relator."
+        )
+    elif ultimo_status_key == "cumprimento" or any(token in classe_texto for token in ("cumprimento", "execucao")):
+        status = "Em cumprimento/execucao"
+        fase = "Cumprimento/execucao"
+        alerta = "O caso aparenta estar em fase executiva ou de cumprimento no retorno publico."
+    elif has_recurso and not has_terminal:
+        status = "Em fase recursal"
+        fase = "Recurso/impugnacao"
+        alerta = "O retorno publico ja mostra fase recursal, mesmo que o ultimo movimento nao seja tipicamente decisorio."
+    elif ultimo_status_key == "decisao" or decisao_categoria:
+        status = "Pos-decisao"
+        fase = "Pos-decisao/julgamento"
+        alerta = (
+            "Ja existe sinal publico de decisao neste processo. "
+            "Vale checar se houve recurso, transito ou inicio de cumprimento depois disso."
+        )
+    elif ultimo_status_key == "conclusao":
+        status = "Concluso para analise"
+        fase = "Aguardando decisao"
+        alerta = "O ultimo marco sugere autos conclusos para analise, despacho ou julgamento."
+    elif ultimo_status_key == "audiencia":
+        status = "Instrucao em andamento"
+        fase = "Instrucao/audiencia"
+        alerta = "O historico mostra audiencia ou etapa de instrucao como ultimo marco relevante."
+    elif ultimo_status_key == "citacao":
+        status = "Em tramitacao"
+        fase = "Citacao/intimacao"
+        alerta = "O caso aparenta estar em fase de comunicacao processual no retorno carregado."
+    elif ultimo_movimento:
+        status = "Em tramitacao"
+        fase = "Tramitacao processual"
+        alerta = "Nao encontrei marco terminal claro no retorno carregado; o processo segue com leitura publica em andamento."
+    else:
+        status = "Dados insuficientes"
+        fase = "Sem leitura fina"
+        alerta = "Esta consulta nao trouxe movimentos suficientes para uma leitura processual mais detalhada."
+
+    sinais: list[str] = []
+    if ultimo_movimento:
+        ultimo_data_texto = format_datetime_label(ultimo_movimento_data)
+        if ultimo_data_texto:
+            sinais.append(f"Ultimo movimento publico carregado: `{ultimo_movimento}` em `{ultimo_data_texto}`.")
+        else:
+            sinais.append(f"Ultimo movimento publico carregado: `{ultimo_movimento}`.")
+    if decisao_categoria:
+        sinais.append(f"Desfecho proxy identificado no caso: `{decisao_categoria}`.")
+    if has_recurso:
+        sinais.append("Ha movimentacao recursal ou de impugnacao no historico carregado.")
+    if has_terminal:
+        sinais.append("Ha sinal de baixa, arquivamento ou extincao em algum ponto do historico.")
+    if has_cumprimento:
+        sinais.append("Ha indicio de cumprimento ou execucao no historico publico.")
+    if has_suspensao:
+        sinais.append("Ha indicio de suspensao ou sobrestamento no historico publico.")
+    if has_conclusao and not any("conclus" in sinal for sinal in sinais):
+        sinais.append("Em algum ponto, os autos ficaram conclusos para analise ou julgamento.")
+    if has_audiencia:
+        sinais.append("O retorno publico registra audiencia ou etapa de instrucao.")
+    if has_citacao:
+        sinais.append("O historico inclui marco de citacao, intimacao ou notificacao.")
+
+    return {
+        "status": status,
+        "fase": fase,
+        "ultimo_marco": ultimo_marco or "Ultima movimentacao publica",
+        "ultimo_movimento": ultimo_movimento,
+        "ultimo_movimento_data": ultimo_movimento_data,
+        "alerta": alerta,
+        "sinais": sinais[:6],
+        "status_key": ultimo_status_key,
+    }
 
 
 def summarize_assuntos_text(assuntos: Any, max_items: int = 3) -> str:
@@ -1693,6 +2255,18 @@ def build_process_summary_text(record: Any) -> str:
     return " ".join(partes)
 
 
+def classify_decision_outcome_with_context(nome: Any, complementos_texto: Any = "") -> str:
+    categoria = classify_decision_outcome(str(nome or "").strip())
+    if categoria:
+        return categoria
+    complemento_limpo = str(complementos_texto or "").strip()
+    if complemento_limpo:
+        categoria = classify_decision_outcome(complemento_limpo)
+        if categoria:
+            return categoria
+    return ""
+
+
 def build_process_summary_dataframe(
     df_anpp: pd.DataFrame,
     df_decisao: pd.DataFrame | None = None,
@@ -1786,6 +2360,8 @@ def build_process_metadata_dataframe(
     tribunal_sigla: str,
     raw_source: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
+    status_overview = build_process_status_overview(record)
+    pessoas_publicas_texto = summarize_public_people_text(raw_source, max_items=3) if isinstance(raw_source, dict) else ""
     dados = [
         ("Numero do processo", str(record.get("numero_processo", "") or "").strip()),
         ("Tribunal da consulta", str(tribunal_sigla or "").upper()),
@@ -1795,9 +2371,14 @@ def build_process_metadata_dataframe(
         ("Orgao julgador", str(record.get("orgao_julgador", "") or "").strip()),
         ("Data de ajuizamento", format_datetime_label(record.get("data_ajuizamento"), include_time=False)),
         ("Ultima atualizacao", format_datetime_label(record.get("ultima_atualizacao"))),
+        ("Situacao atual inferida", str(status_overview.get("status", "") or "").strip()),
+        ("Fase aparente", str(status_overview.get("fase", "") or "").strip()),
+        ("Ultimo marco identificado", str(status_overview.get("ultimo_marco", "") or "").strip()),
+        ("Ultimo movimento publico", str(status_overview.get("ultimo_movimento", "") or "").strip()),
         ("Formato", str(record.get("formato", "") or "").strip()),
         ("Valor da causa", format_currency_br(record.get("valor_causa"))),
         ("Assuntos", summarize_assuntos_text(record.get("assuntos"), max_items=5)),
+        ("Pessoas publicas identificadas", pessoas_publicas_texto),
         ("Movimentos carregados", str(count_movimentos(record.get("movimentos")))),
         ("Desfecho proxy", str(record.get("decisao_categoria", "") or "").strip()),
         ("Movimento decisorio", str(record.get("decisao_movimento", "") or "").strip()),
@@ -2006,6 +2587,15 @@ def is_decisive_movement_name(nome: str) -> bool:
     if not text:
         return False
     if any(hint in text for hint in MOVIMENTO_NAO_DECISORIO_HINTS):
+        if (
+            "concili" in text
+            and any(token in text for token in ("homolog", "acordo", "celebr", "firmad", "transacao"))
+        ):
+            return True
+        return False
+    if "concili" in text and not any(
+        token in text for token in ("homolog", "acordo", "celebr", "firmad", "transacao", "composicao")
+    ):
         return False
     return any(hint in text for hint in DECISAO_MOVIMENTO_HINTS)
 
@@ -2015,6 +2605,17 @@ def classify_decision_outcome(nome: str) -> str:
     text = normalize_search_text(nome)
     if not text:
         return ""
+
+    if any(trecho in text for trecho in ("sentenca homologatoria", "sentenca homologatoria de acordo")) and any(
+        trecho in text for trecho in ("acordo", "concili", "transacao")
+    ):
+        return "Homologacao de acordo"
+
+    if any(trecho in text for trecho in ("acordo", "concili", "transacao")):
+        if any(trecho in text for trecho in ("homolog", "homologa", "sentenca homologatoria")):
+            return "Homologacao de acordo"
+        if any(trecho in text for trecho in ("celebr", "firmad", "realizad", "composicao")):
+            return "Acordo/Conciliacao"
 
     if any(
         trecho in text
@@ -3051,6 +3652,47 @@ def decision_coverage_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
         "com_movimento_final": com_movimento_final,
         "cobertura_desfecho": (com_desfecho / total * 100) if total else 0.0,
         "cobertura_movimento": (com_movimento_final / total * 100) if total else 0.0,
+    }
+
+
+def decision_overview_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
+    cobertura = decision_coverage_summary(df_anpp)
+    favorabilidade = decision_favorability_summary(df_anpp)
+    estabilidade = decision_stability_summary(df_anpp)
+    desfechos_df = decision_outcomes_dataframe(df_anpp, max_items=8)
+    movimentos_df = decision_movements_dataframe(df_anpp, max_items=8)
+
+    desfecho_lider = (
+        str(desfechos_df.iloc[0]["desfecho"])
+        if isinstance(desfechos_df, pd.DataFrame) and not desfechos_df.empty
+        else ""
+    )
+    desfecho_lider_qtd = (
+        int(desfechos_df.iloc[0]["quantidade"])
+        if isinstance(desfechos_df, pd.DataFrame) and not desfechos_df.empty
+        else 0
+    )
+    movimento_lider = (
+        str(movimentos_df.iloc[0]["movimento"])
+        if isinstance(movimentos_df, pd.DataFrame) and not movimentos_df.empty
+        else ""
+    )
+    movimento_lider_qtd = (
+        int(movimentos_df.iloc[0]["quantidade"])
+        if isinstance(movimentos_df, pd.DataFrame) and not movimentos_df.empty
+        else 0
+    )
+
+    return {
+        "cobertura": cobertura,
+        "favorabilidade": favorabilidade,
+        "estabilidade": estabilidade,
+        "desfechos_df": desfechos_df,
+        "movimentos_df": movimentos_df,
+        "desfecho_lider": desfecho_lider,
+        "desfecho_lider_qtd": desfecho_lider_qtd,
+        "movimento_lider": movimento_lider,
+        "movimento_lider_qtd": movimento_lider_qtd,
     }
 
 
@@ -4982,11 +5624,14 @@ def fig_heatmap_dia_hora(df_anpp: pd.DataFrame) -> Any:
     return fig
 
 
-def fig_desfechos_tema(desfechos_tema: pd.DataFrame) -> Any:
+def fig_desfechos_tema(
+    desfechos_tema: pd.DataFrame,
+    title: str = "Distribuicao dos desfechos do tema",
+) -> Any:
     plt = get_plt()
     if desfechos_tema.empty:
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.set_title("Distribuicao dos desfechos do tema")
+        ax.set_title(title)
         ax.text(0.5, 0.5, "Sem desfechos classificados para este tema.", ha="center", va="center")
         ax.axis("off")
         return fig
@@ -5000,7 +5645,7 @@ def fig_desfechos_tema(desfechos_tema: pd.DataFrame) -> Any:
     ax.invert_yaxis()
     ax.set_xlabel("Quantidade")
     ax.set_ylabel("Desfecho")
-    ax.set_title("Distribuicao dos desfechos do tema")
+    ax.set_title(title)
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
     max_valor = int(pd.to_numeric(base["quantidade"], errors="coerce").fillna(0).max())
@@ -6184,7 +6829,12 @@ def render() -> None:
     selected_process_metadata_df = pd.DataFrame(columns=["campo", "valor"])
     selected_public_fields_df = pd.DataFrame(columns=["campo", "valor"])
     selected_public_parties_df = pd.DataFrame(columns=["papel", "envolvido"])
+    selected_public_people_df = pd.DataFrame(columns=["papel", "nome"])
     selected_process_timeline_df = pd.DataFrame(columns=["data_hora", "codigo", "movimento"])
+    selected_process_milestones_df = pd.DataFrame(columns=["marco", "data", "movimento", "codigo"])
+    selected_process_decisions_df = pd.DataFrame(columns=["data_hora", "categoria_proxy", "movimento", "orgao", "complementos"])
+    selected_process_decision_summary_text = ""
+    selected_process_status = build_process_status_overview(pd.Series(dtype="object"))
     selected_process_summary_text = ""
 
     if not process_summary_df.empty and mostrar_bloco_processos:
@@ -6268,17 +6918,65 @@ def render() -> None:
             )
             selected_public_fields_df = build_public_additional_fields_dataframe(selected_raw_source)
             selected_public_parties_df = build_public_parties_dataframe(selected_raw_source)
+            selected_public_people_df = build_public_people_dataframe(selected_raw_source)
             selected_process_timeline_df = build_movements_timeline_dataframe(selected_process_record.get("movimentos"))
+            selected_process_milestones_df = build_process_milestones_dataframe(selected_process_record)
+            selected_process_decisions_df = build_decision_events_dataframe(
+                raw_source=selected_raw_source,
+                fallback_movimentos=selected_process_record.get("movimentos"),
+            )
+            selected_process_decision_summary_text = build_process_decision_summary_text(
+                selected_process_record,
+                raw_source=selected_raw_source,
+            )
+            selected_process_status = build_process_status_overview(selected_process_record)
             selected_process_summary_text = build_process_summary_text(selected_process_record)
 
             col_resumo_processo, col_acesso_processo = st.columns([1.45, 1.0])
             with col_resumo_processo:
                 st.info(selected_process_summary_text)
-                process_tabs = st.tabs(["Ficha", "Movimentos", "Envolvidos", "Campos publicos"])
+                sp1, sp2, sp3 = st.columns(3)
+                sp1.metric(
+                    "Situacao atual",
+                    shorten_display_label(selected_process_status.get("status", "") or "Sem base", max_chars=28),
+                )
+                sp2.metric(
+                    "Fase aparente",
+                    shorten_display_label(selected_process_status.get("fase", "") or "Sem leitura", max_chars=28),
+                )
+                sp3.metric(
+                    "Ultimo marco",
+                    shorten_display_label(selected_process_status.get("ultimo_marco", "") or "Sem marco", max_chars=30),
+                )
+                if selected_process_status.get("alerta"):
+                    st.caption(selected_process_status["alerta"])
+                if selected_process_status.get("sinais"):
+                    with st.expander("Ver sinais processuais identificados", expanded=bool(usar_numero_processo)):
+                        for sinal in selected_process_status["sinais"]:
+                            st.markdown(f"- {sinal}")
+
+                process_tabs = st.tabs(["Ficha", "Marcos", "Decisoes", "Movimentos", "Envolvidos", "Campos publicos"])
                 with process_tabs[0]:
                     if not selected_process_metadata_df.empty:
-                        st.dataframe(selected_process_metadata_df, use_container_width=True, height=320)
+                        st.dataframe(selected_process_metadata_df, use_container_width=True, height=360)
                 with process_tabs[1]:
+                    if not selected_process_milestones_df.empty:
+                        st.dataframe(selected_process_milestones_df, use_container_width=True, height=280)
+                    else:
+                        st.caption(
+                            "Nao consegui identificar marcos processuais suficientes neste retorno publico."
+                        )
+                with process_tabs[2]:
+                    if selected_process_decision_summary_text:
+                        st.info(selected_process_decision_summary_text)
+                    if not selected_process_decisions_df.empty:
+                        st.dataframe(selected_process_decisions_df, use_container_width=True, height=280)
+                    else:
+                        st.caption(
+                            "Nao encontrei decisoes publicas identificaveis neste retorno. "
+                            "Quando o tribunal expuser apenas a movimentacao simples, o app continua mostrando os movimentos e o resumo sintetico."
+                        )
+                with process_tabs[3]:
                     if not selected_process_timeline_df.empty:
                         st.dataframe(selected_process_timeline_df, use_container_width=True, height=280)
                     else:
@@ -6286,14 +6984,25 @@ def render() -> None:
                             "Esta amostra nao trouxe a linha a linha dos movimentos para esse processo. "
                             "Se quiser aprofundar um caso especifico, a busca por numero do processo e o melhor caminho."
                         )
-                with process_tabs[2]:
-                    if isinstance(selected_public_parties_df, pd.DataFrame) and not selected_public_parties_df.empty:
-                        st.dataframe(selected_public_parties_df, use_container_width=True, height=280)
-                    else:
-                        st.caption(
-                            "Neste retorno publico, nao encontrei partes ou polos identificados de forma utilizavel."
-                        )
-                with process_tabs[3]:
+                with process_tabs[4]:
+                    col_partes_publicas, col_pessoas_publicas = st.columns(2)
+                    with col_partes_publicas:
+                        st.markdown("**Partes publicas**")
+                        if isinstance(selected_public_parties_df, pd.DataFrame) and not selected_public_parties_df.empty:
+                            st.dataframe(selected_public_parties_df, use_container_width=True, height=260)
+                        else:
+                            st.caption(
+                                "Neste retorno publico, nao encontrei partes ou polos identificados de forma utilizavel."
+                            )
+                    with col_pessoas_publicas:
+                        st.markdown("**Relatoria/julgamento publico**")
+                        if isinstance(selected_public_people_df, pd.DataFrame) and not selected_public_people_df.empty:
+                            st.dataframe(selected_public_people_df, use_container_width=True, height=260)
+                        else:
+                            st.caption(
+                                "Nao encontrei nomes publicos de relatoria, magistratura ou julgamento neste retorno."
+                            )
+                with process_tabs[5]:
                     if isinstance(selected_public_fields_df, pd.DataFrame) and not selected_public_fields_df.empty:
                         st.dataframe(selected_public_fields_df, use_container_width=True, height=340)
                     else:
@@ -7599,7 +8308,46 @@ def render() -> None:
             )
             a4.metric("Janela observada", tempo_observado_processo)
 
-            process_insights = build_process_analysis_insights(selected_process_record)
+            process_insights = build_process_analysis_insights(
+                selected_process_record,
+                raw_source=selected_raw_source,
+            )
+            st.markdown("**Situacao atual do caso**")
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric(
+                "Situacao atual",
+                shorten_display_label(selected_process_status.get("status", "") or "Sem base", max_chars=28),
+            )
+            s2.metric(
+                "Fase aparente",
+                shorten_display_label(selected_process_status.get("fase", "") or "Sem leitura", max_chars=28),
+            )
+            s3.metric(
+                "Ultimo marco",
+                shorten_display_label(selected_process_status.get("ultimo_marco", "") or "Sem marco", max_chars=30),
+            )
+            s4.metric(
+                "Ultimo movimento",
+                format_datetime_label(selected_process_status.get("ultimo_movimento_data"), include_time=False) or "Sem data",
+            )
+            if selected_process_status.get("alerta"):
+                st.info(selected_process_status["alerta"])
+            if selected_process_status.get("sinais"):
+                st.markdown("**Sinais processuais identificados**")
+                for sinal in selected_process_status["sinais"]:
+                    st.markdown(f"- {sinal}")
+
+            st.markdown("**Resumo e decisoes publicas**")
+            if selected_process_decision_summary_text:
+                st.info(selected_process_decision_summary_text)
+            if not selected_process_decisions_df.empty:
+                st.dataframe(selected_process_decisions_df, use_container_width=True, height=220)
+            else:
+                st.caption(
+                    "Nao encontrei texto decisorio estruturado nesta resposta publica. "
+                    "Mesmo assim, o app segue mostrando o resumo do caso, os marcos e os movimentos."
+                )
+
             col_leitura, col_estrutura = st.columns([1.2, 1.0])
             with col_leitura:
                 st.markdown("**Leitura executiva**")
@@ -7619,10 +8367,17 @@ def render() -> None:
                     ("Valor da causa", format_currency_br(selected_process_record.get("valor_causa"))),
                     ("Desfecho proxy", str(selected_process_record.get("decisao_categoria", "") or "").strip()),
                     ("Movimento decisorio", str(selected_process_record.get("decisao_movimento", "") or "").strip()),
+                    ("Pessoas publicas", summarize_public_people_text(selected_raw_source, max_items=3)),
                 ]
                 estrutura_df = pd.DataFrame(estrutura_rows, columns=["campo", "valor"])
                 estrutura_df["valor"] = estrutura_df["valor"].fillna("").astype(str).str.strip()
                 st.dataframe(estrutura_df[estrutura_df["valor"] != ""], use_container_width=True, height=320)
+
+            st.markdown("**Marcos processuais identificados**")
+            if not selected_process_milestones_df.empty:
+                st.dataframe(selected_process_milestones_df, use_container_width=True, height=240)
+            else:
+                st.info("Nao encontrei marcos processuais suficientes para resumir este caso.")
 
             st.markdown("**Graficos do processo**")
             process_movement_rank_df = process_movement_frequency_dataframe(selected_process_record.get("movimentos"))
@@ -7674,14 +8429,38 @@ def render() -> None:
                         clear_figure=True,
                     )
 
-            detalhe_tabs = st.tabs(["Linha do tempo", "Temas e envolvidos", "Campos publicos adicionais"])
+            detalhe_tabs = st.tabs(["Situacao e marcos", "Decisoes publicas", "Linha do tempo", "Temas e envolvidos", "Campos publicos adicionais"])
             with detalhe_tabs[0]:
+                col_marcos_processo, col_atores_processo = st.columns(2)
+                with col_marcos_processo:
+                    st.markdown("**Marcos processuais**")
+                    if not selected_process_milestones_df.empty:
+                        st.dataframe(selected_process_milestones_df, use_container_width=True, height=280)
+                    else:
+                        st.info("Nao encontrei marcos publicos suficientes para montar este quadro.")
+                with col_atores_processo:
+                    st.markdown("**Atores publicos do retorno**")
+                    if not selected_public_people_df.empty:
+                        st.dataframe(selected_public_people_df, use_container_width=True, height=280)
+                    else:
+                        st.info("Nao encontrei nomes publicos de relatoria, magistratura ou julgamento neste retorno.")
+            with detalhe_tabs[1]:
+                if selected_process_decision_summary_text:
+                    st.info(selected_process_decision_summary_text)
+                if not selected_process_decisions_df.empty:
+                    st.dataframe(selected_process_decisions_df, use_container_width=True, height=320)
+                else:
+                    st.info(
+                        "Nao encontrei decisoes publicas estruturadas nesta consulta. "
+                        "Isso pode acontecer quando o tribunal expoe so o nome do movimento, sem texto complementar."
+                    )
+            with detalhe_tabs[2]:
                 if not selected_process_timeline_df.empty:
                     st.caption("Os movimentos abaixo ajudam a reconstruir a cronologia publica do processo.")
                     st.dataframe(selected_process_timeline_df, use_container_width=True, height=320)
                 else:
                     st.info("Nao encontrei linha do tempo detalhada de movimentos nesta consulta.")
-            with detalhe_tabs[1]:
+            with detalhe_tabs[3]:
                 col_temas_processo, col_envolvidos_processo = st.columns(2)
                 with col_temas_processo:
                     st.markdown("**Temas do processo**")
@@ -7690,12 +8469,15 @@ def render() -> None:
                     else:
                         st.info("Nao encontrei temas publicos identificados neste retorno.")
                 with col_envolvidos_processo:
-                    st.markdown("**Envolvidos publicos**")
+                    st.markdown("**Partes e atores publicos**")
                     if not selected_public_parties_df.empty:
-                        st.dataframe(selected_public_parties_df, use_container_width=True, height=260)
+                        st.dataframe(selected_public_parties_df, use_container_width=True, height=180)
                     else:
                         st.info("Este retorno publico nao trouxe partes identificadas de forma utilizavel.")
-            with detalhe_tabs[2]:
+                    if not selected_public_people_df.empty:
+                        st.markdown("**Relatoria/julgamento publico**")
+                        st.dataframe(selected_public_people_df, use_container_width=True, height=140)
+            with detalhe_tabs[4]:
                 if not selected_public_fields_df.empty:
                     st.dataframe(selected_public_fields_df, use_container_width=True, height=340)
                 else:
@@ -7703,6 +8485,7 @@ def render() -> None:
 
     if area_resultados == "Estatisticas":
         df_stats_base = df_area_anpp.copy()
+        df_stats_decision = df_area_decisao.copy() if isinstance(df_area_decisao, pd.DataFrame) else pd.DataFrame()
         valor_causa_info_stats = valor_causa_summary(df_stats_base)
         top_classes_df_stats = top_classes_display_dataframe(df_stats_base)
         top_orgaos_df_stats = top_orgaos_julgadores_dataframe(df_stats_base, max_items=12)
@@ -7747,6 +8530,96 @@ def render() -> None:
                 st.dataframe(top_orgaos_df_stats, use_container_width=True, height=320)
         else:
             st.info("Sem base suficiente para ranquear orgaos julgadores nesta amostra.")
+
+        st.subheader("Desfechos da amostra")
+        if isinstance(df_stats_decision, pd.DataFrame) and not df_stats_decision.empty:
+            decision_stats = decision_overview_summary(df_stats_decision)
+            decision_by_orgao_stats = decision_by_orgao_dataframe(df_stats_decision, max_orgaos=10)
+            decision_mix_stats = decision_outcome_mix_by_orgao_dataframe(df_stats_decision, max_orgaos=8, max_desfechos=5)
+            desfecho_lider_stats = str(decision_stats.get("desfecho_lider", "") or "").strip()
+            movimento_lider_stats = str(decision_stats.get("movimento_lider", "") or "").strip()
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric(
+                "Desfecho mais comum",
+                "Nao classificado" if desfecho_lider_stats == CATEGORIA_NAO_CLASSIFICADA else shorten_display_label(desfecho_lider_stats or "Sem base", max_chars=24),
+                delta=(
+                    f"{format_int_br(int(decision_stats.get('desfecho_lider_qtd', 0) or 0))} casos"
+                    if desfecho_lider_stats
+                    else None
+                ),
+            )
+            s2.metric(
+                "Cobertura de desfecho",
+                f"{float(decision_stats['cobertura'].get('cobertura_desfecho', 0.0) or 0.0):.1f}%",
+            )
+            s3.metric(
+                "Movimento decisorio lider",
+                shorten_display_label(movimento_lider_stats or "Sem base", max_chars=24),
+                delta=(
+                    f"{format_int_br(int(decision_stats.get('movimento_lider_qtd', 0) or 0))} ocorrencias"
+                    if movimento_lider_stats
+                    else None
+                ),
+            )
+            s4.metric(
+                "Favorabilidade estimada",
+                str(decision_stats["favorabilidade"].get("leitura_favorabilidade", "Sem base")),
+            )
+            st.caption(
+                "Esse bloco usa o ultimo movimento decisorio identificado em cada processo como proxy do desfecho. "
+                "Quando houver poucos movimentos completos, a cobertura pode ficar menor."
+            )
+
+            ds1, ds2 = st.columns(2)
+            with ds1:
+                st.pyplot(
+                    fig_desfechos_tema(
+                        decision_stats["desfechos_df"],
+                        title="Distribuicao dos desfechos da amostra",
+                    ),
+                    clear_figure=True,
+                )
+                st.dataframe(decision_stats["desfechos_df"], use_container_width=True, height=240)
+            with ds2:
+                st.pyplot(
+                    fig_rank_horizontal(
+                        decision_stats["movimentos_df"],
+                        "movimento",
+                        title="Movimentos decisorios mais frequentes",
+                        color="#F28E2B",
+                        max_chars=46,
+                        empty_message="Sem movimentos decisorios suficientes para este ranking.",
+                    ),
+                    clear_figure=True,
+                )
+                if not decision_by_orgao_stats.empty:
+                    with st.expander("Ver cobertura de desfecho por orgao", expanded=False):
+                        st.dataframe(decision_by_orgao_stats, use_container_width=True, height=260)
+
+            ds3, ds4 = st.columns(2)
+            with ds3:
+                st.pyplot(
+                    fig_base_classificada_por_orgao(
+                        decision_by_orgao_stats,
+                        titulo="Base com desfecho classificado por orgao",
+                        eixo_label="Orgao julgador",
+                    ),
+                    clear_figure=True,
+                )
+            with ds4:
+                st.pyplot(
+                    fig_desfechos_por_orgao(
+                        decision_mix_stats,
+                        titulo="Composicao dos desfechos por orgao",
+                        eixo_label="Orgao julgador",
+                    ),
+                    clear_figure=True,
+                )
+        else:
+            st.info(
+                "A leitura de desfechos ainda nao ficou disponivel neste recorte. "
+                "Isso acontece quando a consulta nao trouxe movimentos suficientes para classificar o ultimo desfecho dos processos."
+            )
 
         st.subheader("Ajuizamentos mensais")
         st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
@@ -7932,6 +8805,21 @@ def render() -> None:
         top_assuntos_overview = top_assuntos_dataframe(df_anpp, max_items=8)
         top_orgaos_overview = top_orgaos_julgadores_dataframe(df_anpp, max_items=8)
         serie_mensal_overview = monthly_counts(df_mensal, max_meses=12)
+        decision_overview = (
+            decision_overview_summary(df_decisao)
+            if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty
+            else None
+        )
+        desfechos_overview_df = (
+            decision_overview["desfechos_df"]
+            if isinstance(decision_overview, dict)
+            else pd.DataFrame(columns=["desfecho", "quantidade"])
+        )
+        movimentos_decisao_overview_df = (
+            decision_overview["movimentos_df"]
+            if isinstance(decision_overview, dict)
+            else pd.DataFrame(columns=["movimento", "quantidade"])
+        )
         top_classe_nome = (
             shorten_display_label(str(top_classes_overview.iloc[0]["classe"]), max_chars=32)
             if not top_classes_overview.empty
@@ -7981,6 +8869,41 @@ def render() -> None:
         else:
             pi4.metric("Pico mensal", pico_mensal)
 
+        if isinstance(decision_overview, dict):
+            d1, d2, d3, d4 = st.columns(4)
+            desfecho_lider_overview = str(decision_overview.get("desfecho_lider", "") or "").strip()
+            desfecho_lider_card = (
+                "Nao classificado"
+                if desfecho_lider_overview == CATEGORIA_NAO_CLASSIFICADA
+                else shorten_display_label(desfecho_lider_overview or "Sem base", max_chars=28)
+            )
+            desfecho_lider_delta = (
+                f"{format_int_br(int(decision_overview.get('desfecho_lider_qtd', 0) or 0))} casos"
+                if desfecho_lider_overview
+                else None
+            )
+            movimento_lider_card = shorten_display_label(
+                str(decision_overview.get("movimento_lider", "") or "").strip() or "Sem base",
+                max_chars=28,
+            )
+            movimento_lider_delta = (
+                f"{format_int_br(int(decision_overview.get('movimento_lider_qtd', 0) or 0))} ocorrencias"
+                if str(decision_overview.get("movimento_lider", "") or "").strip()
+                else None
+            )
+            cobertura_desfecho = float(decision_overview["cobertura"].get("cobertura_desfecho", 0.0) or 0.0)
+            favorabilidade_overview = str(
+                decision_overview["favorabilidade"].get("leitura_favorabilidade", "Sem base")
+            )
+            d1.metric("Desfecho lider", desfecho_lider_card, delta=desfecho_lider_delta)
+            d2.metric("Cobertura de desfecho", f"{cobertura_desfecho:.1f}%")
+            d3.metric("Movimento decisorio lider", movimento_lider_card, delta=movimento_lider_delta)
+            d4.metric("Favorabilidade estimada", favorabilidade_overview)
+            st.caption(
+                "Esses sinais usam a camada de leitura decisoria complementar. "
+                "Quando ela nao estiver carregada, o app volta a priorizar classes, temas e volume da amostra."
+            )
+
         g1, g2 = st.columns([1.2, 1.0])
         with g1:
             st.pyplot(fig_mensal(df_mensal), clear_figure=True)
@@ -8021,6 +8944,34 @@ def render() -> None:
                     empty_message="Sem orgaos suficientes para montar esse ranking.",
                 ),
                 clear_figure=True,
+            )
+
+        if isinstance(decision_overview, dict):
+            g5, g6 = st.columns(2)
+            with g5:
+                st.pyplot(
+                    fig_desfechos_tema(
+                        desfechos_overview_df,
+                        title="Distribuicao dos desfechos da amostra",
+                    ),
+                    clear_figure=True,
+                )
+            with g6:
+                st.pyplot(
+                    fig_rank_horizontal(
+                        movimentos_decisao_overview_df,
+                        "movimento",
+                        title="Movimentos decisorios mais frequentes",
+                        color="#F28E2B",
+                        max_chars=42,
+                        empty_message="Sem movimentos decisorios suficientes para este resumo.",
+                    ),
+                    clear_figure=True,
+                )
+        else:
+            st.caption(
+                "A leitura de desfechos ainda nao esta carregada nesta consulta. "
+                "Para liberar esses sinais logo na visao geral, carregue a leitura decisoria complementar em `Temas e estrategia` quando aparecer o aviso."
             )
 
         if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
