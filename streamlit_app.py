@@ -1335,6 +1335,133 @@ def build_party_ranking_dataframe(hits: Any, role_filter: str | None = None) -> 
     return pd.DataFrame(rows)
 
 
+def build_party_role_ranking_dataframe(hits: Any) -> pd.DataFrame:
+    if not isinstance(hits, list) or not hits:
+        return pd.DataFrame(columns=["papel", "papel_grupo", "processos_na_amostra"])
+
+    counter: Counter[tuple[str, str]] = Counter()
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        seen_roles: set[str] = set()
+        for entry in extract_public_party_entries(source):
+            role_group = str(entry.get("papel_grupo", "") or "")
+            papel = str(entry.get("papel", "") or "").strip()
+            if not role_group or role_group in seen_roles:
+                continue
+            seen_roles.add(role_group)
+            counter[(papel, role_group)] += 1
+
+    if not counter:
+        return pd.DataFrame(columns=["papel", "papel_grupo", "processos_na_amostra"])
+
+    rows = [
+        {"papel": papel, "papel_grupo": papel_grupo, "processos_na_amostra": int(total)}
+        for (papel, papel_grupo), total in counter.most_common()
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_public_party_name_options_dataframe(hits: Any, max_items: int = 50) -> pd.DataFrame:
+    base = build_party_ranking_dataframe(hits).head(max_items).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["envolvido", "papel", "processos_na_amostra", "label"])
+    base["label"] = base.apply(
+        lambda row: f"{shorten_display_label(row['envolvido'], max_chars=70)} ({format_int_br(row['processos_na_amostra'])})",
+        axis=1,
+    )
+    return base[["envolvido", "papel", "processos_na_amostra", "label"]]
+
+
+def build_public_person_entries(source: Any) -> list[dict[str, str]]:
+    target_labels = {
+        "relator": "Relator",
+        "magistrado": "Magistrado",
+        "juiz": "Juiz",
+        "desembargador": "Desembargador",
+        "ministro": "Ministro",
+        "revisor": "Revisor",
+        "julgador": "Julgador",
+    }
+
+    def seems_human_name(value: str) -> bool:
+        texto = str(value or "").strip()
+        if not texto:
+            return False
+        letras = sum(ch.isalpha() for ch in texto)
+        if letras < 4:
+            return False
+        if re.search(r"\d{6,}", texto):
+            return False
+        normalized = normalize_search_text(texto)
+        return not any(token in normalized for token in {"vara", "camara", "turma", "juizado", "comarca", "tribunal", "orgao"})
+
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for field_name, value_text in flatten_public_scalar_fields(source):
+        normalized_field = normalize_field_key_name(field_name)
+        if "orgaojulgador" in normalized_field:
+            continue
+        matched_label = next(
+            (label for token, label in target_labels.items() if token in normalized_field),
+            None,
+        )
+        if not matched_label or not seems_human_name(value_text):
+            continue
+        nome = str(value_text).strip()
+        dedupe_key = (nome.lower(), matched_label.lower())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        rows.append({"nome": nome, "papel": matched_label})
+    return rows
+
+
+def build_public_person_ranking_dataframe(hits: Any, role_filter: str | None = None) -> pd.DataFrame:
+    if not isinstance(hits, list) or not hits:
+        return pd.DataFrame(columns=["nome", "papel", "processos_na_amostra"])
+
+    counter: Counter[tuple[str, str]] = Counter()
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        seen: set[tuple[str, str]] = set()
+        for entry in build_public_person_entries(source):
+            nome = str(entry.get("nome", "") or "").strip()
+            papel = str(entry.get("papel", "") or "").strip()
+            if role_filter and normalize_search_text(papel) != normalize_search_text(role_filter):
+                continue
+            if not nome:
+                continue
+            dedupe_key = (nome.lower(), papel.lower())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            counter[(nome, papel)] += 1
+
+    if not counter:
+        return pd.DataFrame(columns=["nome", "papel", "processos_na_amostra"])
+
+    rows = [
+        {"nome": nome, "papel": papel, "processos_na_amostra": int(total)}
+        for (nome, papel), total in counter.most_common(20)
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_public_person_options_dataframe(hits: Any, max_items: int = 40) -> pd.DataFrame:
+    base = build_public_person_ranking_dataframe(hits).head(max_items).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["nome", "papel", "processos_na_amostra", "label"])
+    base["label"] = base.apply(
+        lambda row: f"{shorten_display_label(row['nome'], max_chars=70)} | {row['papel']} ({format_int_br(row['processos_na_amostra'])})",
+        axis=1,
+    )
+    return base[["nome", "papel", "processos_na_amostra", "label"]]
+
+
 def build_process_analysis_insights(record: Any) -> list[str]:
     if record is None or len(record) == 0:
         return []
@@ -4089,6 +4216,40 @@ def filter_dataframe_by_classe_codigo(df_anpp: pd.DataFrame, classe_codigo: Any)
     return df_anpp.loc[base == classe_codigo_int].copy()
 
 
+def orgao_scope_options_dataframe(df_anpp: pd.DataFrame, max_items: int = 40) -> pd.DataFrame:
+    base = top_orgaos_julgadores_dataframe(df_anpp, max_items=max_items).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["orgao_julgador", "quantidade", "participacao", "label"])
+    base["label"] = base.apply(
+        lambda row: f"{shorten_display_label(row['orgao_julgador'], max_chars=70)} ({format_int_br(row['quantidade'])})",
+        axis=1,
+    )
+    return base[["orgao_julgador", "quantidade", "participacao", "label"]]
+
+
+def assunto_scope_options_dataframe(df_anpp: pd.DataFrame, max_items: int = 50) -> pd.DataFrame:
+    base = assuntos_distintos_dataframe(df_anpp).head(max_items).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["assunto", "quantidade", "label"])
+    base["label"] = base.apply(
+        lambda row: f"{shorten_display_label(row['assunto'], max_chars=70)} ({format_int_br(row['quantidade'])})",
+        axis=1,
+    )
+    return base[["assunto", "quantidade", "label"]]
+
+
+def filter_dataframe_by_orgao_julgador(df_anpp: pd.DataFrame, orgao_julgador: Any) -> pd.DataFrame:
+    if not isinstance(df_anpp, pd.DataFrame):
+        return pd.DataFrame()
+    if df_anpp.empty or "orgao_julgador" not in df_anpp.columns:
+        return df_anpp.copy()
+    orgao = str(orgao_julgador or "").strip()
+    if not orgao:
+        return df_anpp.copy()
+    base = df_anpp["orgao_julgador"].fillna("").astype(str).str.strip()
+    return df_anpp.loc[base == orgao].copy()
+
+
 def filter_hits_by_classe_codigo(hits: Any, classe_codigo: Any) -> list[dict[str, Any]]:
     if not isinstance(hits, list) or not hits:
         return []
@@ -4113,6 +4274,131 @@ def filter_hits_by_classe_codigo(hits: Any, classe_codigo: Any) -> list[dict[str
         except Exception:
             continue
         if codigo_int == classe_codigo_int:
+            filtrados.append(hit)
+    return filtrados
+
+
+def extract_source_orgao_julgador(source: Any) -> str:
+    value = first_non_blank(
+        deep_get_path(source, "orgaoJulgador.nome"),
+        deep_get_path(source, "dadosBasicos.orgaoJulgador.nome"),
+    )
+    return str(value or "").strip()
+
+
+def extract_source_assuntos(source: Any) -> list[str]:
+    assuntos = first_non_blank(
+        source.get("assuntos") if isinstance(source, dict) else None,
+        deep_get_path(source, "dadosBasicos.assuntos"),
+        [],
+    )
+    return unique_assuntos_list(parse_assuntos(assuntos))
+
+
+def extract_hit_process_number(hit: Any) -> str:
+    if not isinstance(hit, dict):
+        return ""
+    source = hit.get("_source", {})
+    numero = first_non_blank(
+        source.get("numeroProcesso") if isinstance(source, dict) else None,
+        deep_get_path(source, "dadosBasicos.numeroProcesso"),
+    )
+    return normalize_numero_processo(numero)
+
+
+def filter_dataframe_by_process_numbers(df_anpp: pd.DataFrame, process_numbers: set[str]) -> pd.DataFrame:
+    if not isinstance(df_anpp, pd.DataFrame):
+        return pd.DataFrame()
+    if df_anpp.empty or "numero_processo" not in df_anpp.columns:
+        return df_anpp.copy()
+    if not process_numbers:
+        return df_anpp.iloc[0:0].copy()
+    numeros = df_anpp["numero_processo"].fillna("").astype(str).map(normalize_numero_processo)
+    return df_anpp.loc[numeros.isin(process_numbers)].copy()
+
+
+def filter_hits_by_orgao_julgador(hits: Any, orgao_julgador: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list) or not hits:
+        return []
+    orgao = str(orgao_julgador or "").strip()
+    if not orgao:
+        return list(hits)
+    return [
+        hit for hit in hits
+        if isinstance(hit, dict)
+        and normalize_search_text(extract_source_orgao_julgador(hit.get("_source", {}))) == normalize_search_text(orgao)
+    ]
+
+
+def filter_hits_by_assunto_nome(hits: Any, assunto_nome: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list) or not hits:
+        return []
+    assunto = normalize_search_text(assunto_nome)
+    if not assunto:
+        return list(hits)
+
+    filtrados: list[dict[str, Any]] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        assuntos = extract_source_assuntos(source)
+        if any(normalize_search_text(item) == assunto for item in assuntos):
+            filtrados.append(hit)
+    return filtrados
+
+
+def filter_hits_by_public_party_name(hits: Any, party_name: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list) or not hits:
+        return []
+    nome = normalize_search_text(party_name)
+    if not nome:
+        return list(hits)
+
+    filtrados: list[dict[str, Any]] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        entries = extract_public_party_entries(source)
+        if any(normalize_search_text(entry.get("envolvido", "")) == nome for entry in entries):
+            filtrados.append(hit)
+    return filtrados
+
+
+def filter_hits_by_public_party_role(hits: Any, role_group: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list) or not hits:
+        return []
+    role = str(role_group or "").strip()
+    if not role:
+        return list(hits)
+    role_normalizado = normalize_party_role(role)
+
+    filtrados: list[dict[str, Any]] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        entries = extract_public_party_entries(source)
+        if any(str(entry.get("papel_grupo", "") or "") == role_normalizado for entry in entries):
+            filtrados.append(hit)
+    return filtrados
+
+
+def filter_hits_by_public_person_name(hits: Any, person_name: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list) or not hits:
+        return []
+    nome = normalize_search_text(person_name)
+    if not nome:
+        return list(hits)
+
+    filtrados: list[dict[str, Any]] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source", {})
+        entries = build_public_person_entries(source)
+        if any(normalize_search_text(entry.get("nome", "")) == nome for entry in entries):
             filtrados.append(hit)
     return filtrados
 
@@ -6060,18 +6346,22 @@ def render() -> None:
                 height=340,
             )
 
+    query_mode = str(last_query_context.get("modo_busca", "") or "").strip()
     classe_scope_df = classe_scope_options_dataframe(df_anpp, max_items=60)
     classe_scope_codigo = None
     classe_scope_nome = ""
     classe_scope_label = "Toda a amostra"
+    orgao_scope_value = ""
+    assunto_scope_value = ""
+    jurimetria_scope_descriptions: list[str] = []
     df_area_anpp = df_anpp.copy()
     df_area_decisao = df_decisao.copy() if isinstance(df_decisao, pd.DataFrame) else pd.DataFrame()
     raw_hits_area = list(raw_hits) if isinstance(raw_hits, list) else []
-    area_suporta_recorte_classe = bool(
+    area_suporta_refino_jurimetria = bool(
         not usar_numero_processo and area_resultados in {"Temas e estrategia", "Estatisticas"}
     )
 
-    if area_suporta_recorte_classe and not classe_scope_df.empty:
+    if area_suporta_refino_jurimetria and not classe_scope_df.empty:
         classe_scope_label_to_code = {
             str(row["label"]): str(row["classe_codigo"])
             for _, row in classe_scope_df.iterrows()
@@ -6084,41 +6374,235 @@ def render() -> None:
             }
             for _, row in classe_scope_df.iterrows()
         }
-        default_scope_label = "Toda a amostra"
         classe_referencia = str(last_query_context.get("classe_codigo_referencia", "") or "").strip()
-        if classe_referencia and classe_referencia in classe_scope_code_to_meta:
-            default_scope_label = classe_scope_code_to_meta[classe_referencia]["label"]
-        elif len(classe_scope_df) == 1:
-            default_scope_label = str(classe_scope_df.iloc[0]["label"])
-        scope_options = ["Toda a amostra"] + classe_scope_df["label"].tolist()
-        scope_signature = f"{area_resultados}|{len(scope_options)}|{default_scope_label}"
-        if (
-            st.session_state.get("jurimetria_classe_scope_signature") != scope_signature
-            or st.session_state.get("jurimetria_classe_scope") not in scope_options
-        ):
-            st.session_state["jurimetria_classe_scope_signature"] = scope_signature
-            st.session_state["jurimetria_classe_scope"] = default_scope_label
-        st.markdown("**Recorte da jurimetria**")
-        classe_scope_label = st.selectbox(
-            "Classe CNJ dentro da amostra",
-            options=scope_options,
-            key="jurimetria_classe_scope",
-            help="Use este filtro local para deixar as leituras estrategicas e estatisticas mais especificas sem perder o restante da amostra.",
+        classe_query_focada = bool(
+            query_mode == "classe"
+            and classe_referencia
+            and classe_referencia in classe_scope_code_to_meta
         )
-        classe_scope_codigo = classe_scope_label_to_code.get(classe_scope_label)
-        if classe_scope_codigo:
+        classe_scope_real_choice = bool(len(classe_scope_df) > 1 and not classe_query_focada)
+        mostrar_bloco_refino = bool(
+            classe_scope_real_choice
+            or len(orgao_scope_options_dataframe(df_anpp, max_items=40)) > 1
+            or len(assunto_scope_options_dataframe(df_anpp, max_items=50)) > 1
+            or classe_query_focada
+        )
+        if mostrar_bloco_refino:
+            st.markdown("**Refinar jurimetria**")
+
+        if classe_query_focada:
+            classe_scope_codigo = classe_referencia
             classe_scope_meta = classe_scope_code_to_meta.get(str(classe_scope_codigo), {})
             classe_scope_nome = str(classe_scope_meta.get("classe", "") or "").strip()
-            st.caption(
-                f"Jurimetria focada no codigo `{classe_scope_codigo}`"
-                + (f" ({classe_scope_nome})" if classe_scope_nome else "")
-                + "."
-            )
             df_area_anpp = filter_dataframe_by_classe_codigo(df_anpp, classe_scope_codigo)
             df_area_decisao = filter_dataframe_by_classe_codigo(df_decisao, classe_scope_codigo)
             raw_hits_area = filter_hits_by_classe_codigo(raw_hits, classe_scope_codigo)
-        else:
-            st.caption("Jurimetria focada em toda a amostra retornada pela consulta atual.")
+            jurimetria_scope_descriptions.append(
+                f"Jurimetria focada automaticamente na classe `{classe_scope_codigo}`"
+                + (f" ({classe_scope_nome})" if classe_scope_nome else "")
+                + "."
+            )
+        elif classe_scope_real_choice:
+            default_scope_label = "Toda a amostra"
+            scope_options = ["Toda a amostra"] + classe_scope_df["label"].tolist()
+            scope_signature = f"{area_resultados}|{len(scope_options)}|{default_scope_label}"
+            if (
+                st.session_state.get("jurimetria_classe_scope_signature") != scope_signature
+                or st.session_state.get("jurimetria_classe_scope") not in scope_options
+            ):
+                st.session_state["jurimetria_classe_scope_signature"] = scope_signature
+                st.session_state["jurimetria_classe_scope"] = default_scope_label
+            classe_scope_label = st.selectbox(
+                "Classe CNJ dentro da amostra",
+                options=scope_options,
+                key="jurimetria_classe_scope",
+                help="Use este filtro local quando a amostra tiver mais de uma classe relevante.",
+            )
+            classe_scope_codigo = classe_scope_label_to_code.get(classe_scope_label)
+            if classe_scope_codigo:
+                classe_scope_meta = classe_scope_code_to_meta.get(str(classe_scope_codigo), {})
+                classe_scope_nome = str(classe_scope_meta.get("classe", "") or "").strip()
+                df_area_anpp = filter_dataframe_by_classe_codigo(df_anpp, classe_scope_codigo)
+                df_area_decisao = filter_dataframe_by_classe_codigo(df_decisao, classe_scope_codigo)
+                raw_hits_area = filter_hits_by_classe_codigo(raw_hits, classe_scope_codigo)
+                jurimetria_scope_descriptions.append(
+                    f"Classe ativa: `{classe_scope_codigo}`"
+                    + (f" ({classe_scope_nome})" if classe_scope_nome else "")
+                    + "."
+                )
+            else:
+                jurimetria_scope_descriptions.append("Classe ativa: toda a amostra retornada pela consulta.")
+        elif len(classe_scope_df) == 1:
+            unica_classe = classe_scope_df.iloc[0]
+            unica_classe_codigo = str(unica_classe.get("classe_codigo", "") or "").strip()
+            unica_classe_nome = str(unica_classe.get("classe", "") or "").strip()
+            if unica_classe_codigo:
+                jurimetria_scope_descriptions.append(
+                    f"A amostra desta jurimetria ficou concentrada na classe `{unica_classe_codigo}`"
+                    + (f" ({unica_classe_nome})" if unica_classe_nome else "")
+                    + "."
+                )
+
+        orgao_scope_df = orgao_scope_options_dataframe(df_area_anpp, max_items=40)
+        if len(orgao_scope_df) > 1:
+            orgao_label_to_value = {
+                str(row["label"]): str(row["orgao_julgador"])
+                for _, row in orgao_scope_df.iterrows()
+            }
+            orgao_options = ["Todos os orgaos"] + orgao_scope_df["label"].tolist()
+            orgao_signature = f"{area_resultados}|{classe_scope_codigo or 'toda'}|{len(orgao_options)}"
+            if (
+                st.session_state.get("jurimetria_orgao_scope_signature") != orgao_signature
+                or st.session_state.get("jurimetria_orgao_scope") not in orgao_options
+            ):
+                st.session_state["jurimetria_orgao_scope_signature"] = orgao_signature
+                st.session_state["jurimetria_orgao_scope"] = "Todos os orgaos"
+            orgao_scope_label = st.selectbox(
+                "Orgao julgador na amostra",
+                options=orgao_options,
+                key="jurimetria_orgao_scope",
+                help="Use este refinador para ver a jurimetria de um orgao especifico dentro da amostra atual.",
+            )
+            orgao_scope_value = orgao_label_to_value.get(orgao_scope_label, "")
+            if orgao_scope_value:
+                df_area_anpp = filter_dataframe_by_orgao_julgador(df_area_anpp, orgao_scope_value)
+                df_area_decisao = filter_dataframe_by_orgao_julgador(df_area_decisao, orgao_scope_value)
+                raw_hits_area = filter_hits_by_orgao_julgador(raw_hits_area, orgao_scope_value)
+                jurimetria_scope_descriptions.append(
+                    f"Orgao ativo: `{shorten_display_label(orgao_scope_value, max_chars=80)}`."
+                )
+
+        assunto_scope_df = assunto_scope_options_dataframe(df_area_anpp, max_items=50)
+        if len(assunto_scope_df) > 1:
+            assunto_label_to_value = {
+                str(row["label"]): str(row["assunto"])
+                for _, row in assunto_scope_df.iterrows()
+            }
+            assunto_options = ["Todos os assuntos"] + assunto_scope_df["label"].tolist()
+            assunto_signature = (
+                f"{area_resultados}|{classe_scope_codigo or 'toda'}|"
+                f"{normalize_search_text(orgao_scope_value)}|{len(assunto_options)}"
+            )
+            if (
+                st.session_state.get("jurimetria_assunto_scope_signature") != assunto_signature
+                or st.session_state.get("jurimetria_assunto_scope") not in assunto_options
+            ):
+                st.session_state["jurimetria_assunto_scope_signature"] = assunto_signature
+                st.session_state["jurimetria_assunto_scope"] = "Todos os assuntos"
+            assunto_scope_label = st.selectbox(
+                "Assunto dentro da amostra",
+                options=assunto_options,
+                key="jurimetria_assunto_scope",
+                help="Use este refinador para concentrar a jurimetria em um assunto especifico da amostra atual.",
+            )
+            assunto_scope_value = assunto_label_to_value.get(assunto_scope_label, "")
+            if assunto_scope_value:
+                df_area_anpp = filter_dataframe_by_tema(df_area_anpp, assunto_scope_value)
+                df_area_decisao = filter_dataframe_by_tema(df_area_decisao, assunto_scope_value)
+                raw_hits_area = filter_hits_by_assunto_nome(raw_hits_area, assunto_scope_value)
+                jurimetria_scope_descriptions.append(
+                    f"Assunto ativo: `{assunto_scope_value}`."
+                )
+
+        party_role_scope_df = build_party_role_ranking_dataframe(raw_hits_area)
+        if len(party_role_scope_df) > 1:
+            role_label_to_value = {
+                str(row["papel"]): str(row["papel_grupo"])
+                for _, row in party_role_scope_df.iterrows()
+            }
+            role_options = ["Todos os polos"] + party_role_scope_df["papel"].tolist()
+            role_signature = (
+                f"{area_resultados}|{classe_scope_codigo or 'toda'}|"
+                f"{normalize_search_text(orgao_scope_value)}|{normalize_search_text(assunto_scope_value)}|{len(role_options)}"
+            )
+            if (
+                st.session_state.get("jurimetria_party_role_scope_signature") != role_signature
+                or st.session_state.get("jurimetria_party_role_scope") not in role_options
+            ):
+                st.session_state["jurimetria_party_role_scope_signature"] = role_signature
+                st.session_state["jurimetria_party_role_scope"] = "Todos os polos"
+            party_role_label = st.selectbox(
+                "Polo publico na amostra",
+                options=role_options,
+                key="jurimetria_party_role_scope",
+                help="Aparece quando a amostra trouxe partes publicas com identificacao de polo.",
+            )
+            party_role_scope_value = role_label_to_value.get(party_role_label, "")
+            if party_role_scope_value:
+                raw_hits_area = filter_hits_by_public_party_role(raw_hits_area, party_role_scope_value)
+                numeros_party_role = {extract_hit_process_number(hit) for hit in raw_hits_area if extract_hit_process_number(hit)}
+                df_area_anpp = filter_dataframe_by_process_numbers(df_area_anpp, numeros_party_role)
+                df_area_decisao = filter_dataframe_by_process_numbers(df_area_decisao, numeros_party_role)
+                jurimetria_scope_descriptions.append(f"Polo publico ativo: `{party_role_label}`.")
+
+        party_name_scope_df = build_public_party_name_options_dataframe(raw_hits_area, max_items=50)
+        if len(party_name_scope_df) > 1:
+            party_label_to_value = {
+                str(row["label"]): str(row["envolvido"])
+                for _, row in party_name_scope_df.iterrows()
+            }
+            party_options = ["Todas as partes/pessoas"] + party_name_scope_df["label"].tolist()
+            party_signature = (
+                f"{area_resultados}|{classe_scope_codigo or 'toda'}|"
+                f"{normalize_search_text(orgao_scope_value)}|{normalize_search_text(assunto_scope_value)}|{len(party_options)}"
+            )
+            if (
+                st.session_state.get("jurimetria_party_name_scope_signature") != party_signature
+                or st.session_state.get("jurimetria_party_name_scope") not in party_options
+            ):
+                st.session_state["jurimetria_party_name_scope_signature"] = party_signature
+                st.session_state["jurimetria_party_name_scope"] = "Todas as partes/pessoas"
+            party_scope_label = st.selectbox(
+                "Parte ou pessoa publica",
+                options=party_options,
+                key="jurimetria_party_name_scope",
+                help="Aparece quando a amostra trouxe nomes publicos de partes de forma utilizavel.",
+            )
+            party_scope_value = party_label_to_value.get(party_scope_label, "")
+            if party_scope_value:
+                raw_hits_area = filter_hits_by_public_party_name(raw_hits_area, party_scope_value)
+                numeros_party_name = {extract_hit_process_number(hit) for hit in raw_hits_area if extract_hit_process_number(hit)}
+                df_area_anpp = filter_dataframe_by_process_numbers(df_area_anpp, numeros_party_name)
+                df_area_decisao = filter_dataframe_by_process_numbers(df_area_decisao, numeros_party_name)
+                jurimetria_scope_descriptions.append(
+                    f"Parte/pessoa publica ativa: `{shorten_display_label(party_scope_value, max_chars=90)}`."
+                )
+
+        public_person_scope_df = build_public_person_options_dataframe(raw_hits_area, max_items=40)
+        if len(public_person_scope_df) > 1:
+            person_label_to_value = {
+                str(row["label"]): str(row["nome"])
+                for _, row in public_person_scope_df.iterrows()
+            }
+            person_options = ["Todos os nomes publicos"] + public_person_scope_df["label"].tolist()
+            person_signature = (
+                f"{area_resultados}|{classe_scope_codigo or 'toda'}|"
+                f"{normalize_search_text(orgao_scope_value)}|{normalize_search_text(assunto_scope_value)}|{len(person_options)}"
+            )
+            if (
+                st.session_state.get("jurimetria_public_person_scope_signature") != person_signature
+                or st.session_state.get("jurimetria_public_person_scope") not in person_options
+            ):
+                st.session_state["jurimetria_public_person_scope_signature"] = person_signature
+                st.session_state["jurimetria_public_person_scope"] = "Todos os nomes publicos"
+            person_scope_label = st.selectbox(
+                "Relator/julgador publico",
+                options=person_options,
+                key="jurimetria_public_person_scope",
+                help="So aparece quando o retorno publico trouxer nomes em campos compativeis com relatoria ou julgamento.",
+            )
+            person_scope_value = person_label_to_value.get(person_scope_label, "")
+            if person_scope_value:
+                raw_hits_area = filter_hits_by_public_person_name(raw_hits_area, person_scope_value)
+                numeros_person = {extract_hit_process_number(hit) for hit in raw_hits_area if extract_hit_process_number(hit)}
+                df_area_anpp = filter_dataframe_by_process_numbers(df_area_anpp, numeros_person)
+                df_area_decisao = filter_dataframe_by_process_numbers(df_area_decisao, numeros_person)
+                jurimetria_scope_descriptions.append(
+                    f"Nome publico ativo: `{shorten_display_label(person_scope_value, max_chars=90)}`."
+                )
+
+        for descricao_scope in jurimetria_scope_descriptions:
+            st.caption(descricao_scope)
 
     if area_resultados == "Temas e estrategia" and usar_numero_processo:
         st.info(
@@ -7221,6 +7705,7 @@ def render() -> None:
         df_stats_base = df_area_anpp.copy()
         valor_causa_info_stats = valor_causa_summary(df_stats_base)
         top_classes_df_stats = top_classes_display_dataframe(df_stats_base)
+        top_orgaos_df_stats = top_orgaos_julgadores_dataframe(df_stats_base, max_items=12)
         df_stats_mensal = df_stats_base.copy()
         raw_hits_stats = raw_hits_area
         if classe_scope_codigo:
@@ -7241,6 +7726,27 @@ def render() -> None:
                 st.dataframe(top_classes_df_stats, use_container_width=True, height=320)
             else:
                 st.info("Sem classes suficientes para montar esse ranking na amostra atual.")
+
+        st.subheader("Quem mais julgou na amostra")
+        st.caption(
+            "Aqui o app destaca os orgaos julgadores que mais aparecem no recorte ativo da jurimetria."
+        )
+        if not top_orgaos_df_stats.empty:
+            st.pyplot(
+                fig_rank_horizontal(
+                    top_orgaos_df_stats,
+                    "orgao_julgador",
+                    title="Orgaos julgadores mais frequentes",
+                    color="#E15759",
+                    max_chars=54,
+                    empty_message="Sem base suficiente para ranquear orgaos julgadores.",
+                ),
+                clear_figure=True,
+            )
+            with st.expander("Ver tabela dos orgaos julgadores", expanded=False):
+                st.dataframe(top_orgaos_df_stats, use_container_width=True, height=320)
+        else:
+            st.info("Sem base suficiente para ranquear orgaos julgadores nesta amostra.")
 
         st.subheader("Ajuizamentos mensais")
         st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
@@ -7297,6 +7803,27 @@ def render() -> None:
                     st.dataframe(ranking_ativo_df, use_container_width=True, height=320)
                 else:
                     st.caption("Nao encontrei envolvidos publicos suficientes no polo ativo nesta amostra.")
+
+        public_person_ranking_df = build_public_person_ranking_dataframe(raw_hits_stats)
+        if not public_person_ranking_df.empty:
+            st.subheader("Relatoria e julgamento publico")
+            st.caption(
+                "Este bloco so aparece quando o retorno publico trouxer nomes em campos compativeis com relatoria, magistratura ou julgamento."
+            )
+            st.pyplot(
+                fig_rank_horizontal(
+                    public_person_ranking_df.rename(columns={"nome": "label_nome"}),
+                    "label_nome",
+                    value_column="processos_na_amostra",
+                    title="Nomes publicos mais recorrentes",
+                    color="#76B7B2",
+                    max_chars=56,
+                    empty_message="Sem nomes publicos suficientes para ranquear.",
+                ),
+                clear_figure=True,
+            )
+            with st.expander("Ver tabela de nomes publicos", expanded=False):
+                st.dataframe(public_person_ranking_df, use_container_width=True, height=320)
 
         if mostrar_graficos_avancados:
             st.subheader("Fluxo mensal")
