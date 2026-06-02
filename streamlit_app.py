@@ -8836,6 +8836,20 @@ def render() -> None:
             if isinstance(decision_overview, dict)
             else pd.DataFrame(columns=["movimento", "quantidade"])
         )
+        top_theme_decision_overview_df = (
+            theme_overview_dataframe(df_decisao, max_items=8)
+            if isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty
+            else pd.DataFrame(
+                columns=[
+                    "tema",
+                    "processos",
+                    "com_desfecho",
+                    "cobertura_desfecho",
+                    "com_movimento_final",
+                    "cobertura_movimento",
+                ]
+            )
+        )
         top_classe_nome = (
             shorten_display_label(str(top_classes_overview.iloc[0]["classe"]), max_chars=32)
             if not top_classes_overview.empty
@@ -8988,6 +9002,61 @@ def render() -> None:
             st.caption(
                 "A leitura de desfechos ainda nao esta carregada nesta consulta. "
                 "Para liberar esses sinais logo na visao geral, carregue a leitura decisoria complementar em `Temas e estrategia` quando aparecer o aviso."
+            )
+
+        if not top_theme_decision_overview_df.empty:
+            tema_lider_decisao = str(top_theme_decision_overview_df.iloc[0]["tema"] or "").strip()
+            df_tema_lider_overview = filter_dataframe_by_tema(df_decisao, tema_lider_decisao)
+            desfechos_tema_lider_overview = decision_outcomes_dataframe(df_tema_lider_overview)
+            movimentos_tema_lider_overview = decision_movements_dataframe(df_tema_lider_overview)
+            favorabilidade_tema_lider_overview = decision_favorability_summary(df_tema_lider_overview)
+            tema_lider_processos = int(top_theme_decision_overview_df.iloc[0].get("processos", 0) or 0)
+            tema_lider_com_desfecho = int(top_theme_decision_overview_df.iloc[0].get("com_desfecho", 0) or 0)
+            tema_lider_cobertura = str(top_theme_decision_overview_df.iloc[0].get("cobertura_desfecho", "") or "").strip()
+
+            st.markdown("**Tema lider na leitura decisoria**")
+            st.caption(
+                f"O tema lider pela base decisoria atual e `{tema_lider_decisao}`. "
+                f"Neste recorte, o app encontrou {format_int_br(tema_lider_processos)} processo(s), "
+                f"com {format_int_br(tema_lider_com_desfecho)} desfecho(s) classificado(s)"
+                + (f" ({tema_lider_cobertura})" if tema_lider_cobertura else "")
+                + "."
+            )
+            tl1, tl2, tl3 = st.columns(3)
+            tl1.metric("Tema lider", shorten_display_label(tema_lider_decisao, max_chars=28))
+            tl2.metric(
+                "Cobertura de desfecho",
+                tema_lider_cobertura or "Sem base",
+            )
+            tl3.metric(
+                "Favorabilidade do tema lider",
+                str(favorabilidade_tema_lider_overview.get("leitura_favorabilidade", "Sem base")),
+            )
+
+            tg1, tg2 = st.columns(2)
+            with tg1:
+                st.pyplot(
+                    fig_desfechos_tema(
+                        desfechos_tema_lider_overview,
+                        title=f"Desfechos do tema lider: {shorten_display_label(tema_lider_decisao, max_chars=32)}",
+                    ),
+                    clear_figure=True,
+                )
+            with tg2:
+                st.pyplot(
+                    fig_rank_horizontal(
+                        movimentos_tema_lider_overview,
+                        "movimento",
+                        title=f"Movimentos decisorios do tema lider: {shorten_display_label(tema_lider_decisao, max_chars=30)}",
+                        color="#F28E2B",
+                        max_chars=42,
+                        empty_message="Sem movimentos decisorios suficientes para este tema.",
+                    ),
+                    clear_figure=True,
+                )
+        elif isinstance(df_decisao, pd.DataFrame) and not df_decisao.empty:
+            st.caption(
+                "A base decisoria foi carregada, mas ainda nao encontrei um tema lider com massa suficiente para montar esse painel."
             )
 
         if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
