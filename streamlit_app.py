@@ -3686,15 +3686,16 @@ def build_sample_insights(
             f"O assunto mais recorrente é `{assunto}`, com {format_int_br(quantidade)} ocorrências na amostra."
         )
 
-    if (
-        isinstance(top_100_df, pd.DataFrame)
-        and not top_100_df.empty
-        and {"municipio", "orgao_julgador", "quantidade"}.issubset(top_100_df.columns)
-    ):
-        top_linha = top_100_df.iloc[0]
+    qtd_temas = int(len(assuntos_distintos_dataframe(df_anpp)))
+    if qtd_temas:
         insights.append(
-            f"A combinação município/órgão mais frequente é `{top_linha['municipio']} / {top_linha['orgao_julgador']}`, "
-            f"com {format_int_br(top_linha['quantidade'])} registros."
+            f"A amostra trouxe `{format_int_br(qtd_temas)}` temas distintos, o que ajuda a medir se o recorte veio mais concentrado ou mais disperso."
+        )
+
+    valor_info = valor_causa_summary(df_anpp)
+    if int(valor_info.get("com_valor", 0) or 0) > 0:
+        insights.append(
+            f"O retorno trouxe valor da causa em `{format_int_br(valor_info['com_valor'])}` processos ({valor_info['cobertura']:.1f}% da amostra), com mediana de `{format_currency_br(valor_info['mediana'])}`."
         )
 
     return insights[:6]
@@ -7400,6 +7401,108 @@ def render() -> None:
         )
 
     if area_resultados == "Visao geral":
+        top_classes_overview = top_classes_dataframe(df_anpp, max_items=8)
+        top_assuntos_overview = top_assuntos_dataframe(df_anpp, max_items=8)
+        top_orgaos_overview = top_orgaos_julgadores_dataframe(df_anpp, max_items=8)
+        serie_mensal_overview = monthly_counts(df_mensal, max_meses=12)
+        top_classe_nome = (
+            shorten_display_label(str(top_classes_overview.iloc[0]["classe"]), max_chars=32)
+            if not top_classes_overview.empty
+            else "Sem base"
+        )
+        top_classe_qtd = (
+            format_int_br(int(top_classes_overview.iloc[0]["quantidade"]))
+            if not top_classes_overview.empty
+            else ""
+        )
+        top_assunto_nome = (
+            shorten_display_label(str(top_assuntos_overview.iloc[0]["assunto"]), max_chars=32)
+            if not top_assuntos_overview.empty
+            else "Sem base"
+        )
+        top_assunto_qtd = (
+            format_int_br(int(top_assuntos_overview.iloc[0]["quantidade"]))
+            if not top_assuntos_overview.empty
+            else ""
+        )
+        top_orgao_nome = (
+            shorten_display_label(str(top_orgaos_overview.iloc[0]["orgao_julgador"]), max_chars=32)
+            if not top_orgaos_overview.empty
+            else "Sem base"
+        )
+        top_orgao_part = (
+            str(top_orgaos_overview.iloc[0]["participacao"])
+            if not top_orgaos_overview.empty and "participacao" in top_orgaos_overview.columns
+            else ""
+        )
+        pico_mensal = (
+            f"{serie_mensal_overview.idxmax().strftime('%m/%Y')} ({format_int_br(int(serie_mensal_overview.max()))})"
+            if not serie_mensal_overview.empty
+            else "Sem base"
+        )
+
+        st.subheader("Painel inicial")
+        st.caption(
+            "Aqui ficam os sinais mais importantes da amostra para o usuario entender rapidamente o recorte antes de entrar nas outras areas."
+        )
+        pi1, pi2, pi3, pi4 = st.columns(4)
+        pi1.metric("Classe lider", top_classe_nome, delta=f"{top_classe_qtd} processos" if top_classe_qtd else None)
+        pi2.metric("Tema lider", top_assunto_nome, delta=f"{top_assunto_qtd} ocorrencias" if top_assunto_qtd else None)
+        pi3.metric("Orgao lider", top_orgao_nome, delta=top_orgao_part or None)
+        if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
+            pi4.metric("Mediana valor da causa", format_currency_br(valor_causa_info.get("mediana")))
+        else:
+            pi4.metric("Pico mensal", pico_mensal)
+
+        g1, g2 = st.columns([1.2, 1.0])
+        with g1:
+            st.pyplot(fig_mensal(df_mensal), clear_figure=True)
+        with g2:
+            st.pyplot(
+                fig_rank_horizontal(
+                    top_classes_overview,
+                    "classe",
+                    title="Classes mais frequentes da amostra",
+                    color="#4E79A7",
+                    max_chars=40,
+                    empty_message="Sem classes suficientes para montar esse ranking.",
+                ),
+                clear_figure=True,
+            )
+
+        g3, g4 = st.columns(2)
+        with g3:
+            st.pyplot(
+                fig_rank_horizontal(
+                    top_assuntos_overview,
+                    "assunto",
+                    title="Assuntos mais recorrentes da amostra",
+                    color="#59A14F",
+                    max_chars=40,
+                    empty_message="Sem assuntos suficientes para montar esse ranking.",
+                ),
+                clear_figure=True,
+            )
+        with g4:
+            st.pyplot(
+                fig_rank_horizontal(
+                    top_orgaos_overview,
+                    "orgao_julgador",
+                    title="Orgaos julgadores mais frequentes",
+                    color="#E15759",
+                    max_chars=40,
+                    empty_message="Sem orgaos suficientes para montar esse ranking.",
+                ),
+                clear_figure=True,
+            )
+
+        if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
+            st.markdown("**Valor da causa na amostra**")
+            st.caption(
+                "Este grafico aparece logo na visao geral quando o retorno publico traz valor da causa com base suficiente."
+            )
+            st.pyplot(fig_boxplot_valor_causa(df_anpp), clear_figure=True)
+
         st.subheader("Resumos automaticos")
         st.caption(
             "Leituras em linguagem simples geradas a partir da amostra atual. Elas ajudam na interpretacao inicial, "
