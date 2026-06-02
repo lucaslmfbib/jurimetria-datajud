@@ -6012,6 +6012,22 @@ def render() -> None:
             font-weight: 600;
             white-space: normal;
         }
+        div[data-testid="stMetric"] label[data-testid="stMetricLabel"] p {
+            font-size: 0.95rem;
+            line-height: 1.2;
+        }
+        div[data-testid="stMetricValue"] > div {
+            font-size: clamp(1.45rem, 1.9vw, 2.55rem);
+            line-height: 1.06;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        div[data-testid="stMetricDelta"] > div {
+            font-size: 0.9rem;
+            line-height: 1.15;
+            white-space: normal;
+        }
         </style>
         """,
         unsafe_allow_html=True,
