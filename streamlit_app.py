@@ -46,7 +46,7 @@ VALUE_CAUSE_SOURCE_FIELDS = [
     "dadosBasicos.valorCausa.valor",
     "dadosBasicos.valorAcao.valor",
 ]
-PARTY_SOURCE_FIELDS = [
+PARTY_NAME_SOURCE_FIELDS = [
     "partes.nome",
     "partes.polo",
     "partes.tipoParte",
@@ -60,7 +60,81 @@ PARTY_SOURCE_FIELDS = [
     "participantes.nome",
     "participantes.polo",
 ]
+PARTY_DOCUMENT_SOURCE_FIELDS = [
+    "partes.cpf",
+    "partes.cnpj",
+    "partes.cpfCnpj",
+    "partes.documento",
+    "partes.numeroDocumento",
+    "poloAtivo.cpf",
+    "poloAtivo.cnpj",
+    "poloAtivo.cpfCnpj",
+    "poloAtivo.documento",
+    "poloAtivo.numeroDocumento",
+    "poloPassivo.cpf",
+    "poloPassivo.cnpj",
+    "poloPassivo.cpfCnpj",
+    "poloPassivo.documento",
+    "poloPassivo.numeroDocumento",
+    "envolvidos.cpf",
+    "envolvidos.cnpj",
+    "envolvidos.cpfCnpj",
+    "envolvidos.documento",
+    "envolvidos.numeroDocumento",
+    "participantes.cpf",
+    "participantes.cnpj",
+    "participantes.cpfCnpj",
+    "participantes.documento",
+    "participantes.numeroDocumento",
+]
+PARTY_SOURCE_FIELDS = [
+    *PARTY_NAME_SOURCE_FIELDS,
+    *PARTY_DOCUMENT_SOURCE_FIELDS,
+]
+PARTY_NAME_QUERY_FIELDS = [
+    "partes.nome^5",
+    "poloAtivo.nome^4",
+    "poloPassivo.nome^4",
+    "envolvidos.nome^4",
+    "participantes.nome^4",
+]
+PARTY_DOCUMENT_QUERY_FIELDS = [
+    "partes.cpf^6",
+    "partes.cnpj^6",
+    "partes.cpfCnpj^6",
+    "partes.documento^5",
+    "partes.numeroDocumento^5",
+    "poloAtivo.cpf^6",
+    "poloAtivo.cnpj^6",
+    "poloAtivo.cpfCnpj^6",
+    "poloAtivo.documento^5",
+    "poloAtivo.numeroDocumento^5",
+    "poloPassivo.cpf^6",
+    "poloPassivo.cnpj^6",
+    "poloPassivo.cpfCnpj^6",
+    "poloPassivo.documento^5",
+    "poloPassivo.numeroDocumento^5",
+    "envolvidos.cpf^6",
+    "envolvidos.cnpj^6",
+    "envolvidos.cpfCnpj^6",
+    "envolvidos.documento^5",
+    "envolvidos.numeroDocumento^5",
+    "participantes.cpf^6",
+    "participantes.cnpj^6",
+    "participantes.cpfCnpj^6",
+    "participantes.documento^5",
+    "participantes.numeroDocumento^5",
+]
+FREE_TEXT_QUERY_FIELDS = [
+    "numeroProcesso^7",
+    "classe.nome^5",
+    "assuntos.nome^5",
+    "orgaoJulgador.nome^3",
+    "movimentos.nome^2",
+    *PARTY_NAME_QUERY_FIELDS,
+]
 DEFAULT_SOURCE_FIELDS = [
+    "tribunal",
     "numeroProcesso",
     "classe.codigo",
     "classe.nome",
@@ -75,6 +149,7 @@ DEFAULT_SOURCE_FIELDS = [
     *PARTY_SOURCE_FIELDS,
 ]
 DECISION_SOURCE_FIELDS = [
+    "tribunal",
     "numeroProcesso",
     "classe.codigo",
     "classe.nome",
@@ -692,6 +767,8 @@ def format_modo_busca_option(modo_busca: str) -> str:
         "classe": "Classe processual",
         "tema": "Tema no tribunal",
         "processo": "Numero do processo",
+        "parte": "Nome / CPF / parte",
+        "livre": "Palavra-chave ampla",
     }
     return labels.get(str(modo_busca or ""), str(modo_busca or ""))
 
@@ -853,6 +930,23 @@ def normalize_assunto_filtro(raw_assunto: Any) -> str:
     return str(raw_assunto or "").strip()
 
 
+def normalize_party_name(value: Any) -> str:
+    texto = " ".join(str(value or "").strip().split())
+    return texto
+
+
+def normalize_document_search_value(value: Any) -> str:
+    texto = str(value or "").strip()
+    if not texto:
+        return ""
+    somente_digitos = "".join(ch for ch in texto if ch.isdigit())
+    return somente_digitos or texto
+
+
+def normalize_free_text_query(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
 def build_theme_suggestion_cache_key(
     tribunal_sigla: str,
     classe_codigo: Any,
@@ -948,6 +1042,30 @@ def build_data_ajuizamento_range(
     if fim:
         faixa["lte"] = datetime.combine(fim, dt_time.max).isoformat()
     return {"range": {"dataAjuizamento": faixa}}
+
+
+def build_exactish_search_clause(
+    query_text: str,
+    fields: list[str],
+) -> dict[str, Any]:
+    return {
+        "multi_match": {
+            "query": str(query_text or "").strip(),
+            "fields": fields,
+            "type": "phrase",
+            "lenient": True,
+        }
+    }
+
+
+def build_free_text_search_clause(query_text: str) -> dict[str, Any]:
+    return {
+        "simple_query_string": {
+            "query": str(query_text or "").strip(),
+            "fields": FREE_TEXT_QUERY_FIELDS,
+            "default_operator": "and",
+        }
+    }
 
 
 def format_periodo_aplicado(data_inicio: Any = None, data_fim: Any = None) -> str:
@@ -1208,10 +1326,21 @@ def build_query_summary_items(query_context: Any) -> list[tuple[str, str]]:
     if numero_processo:
         items.append(("Processo", numero_processo))
 
+    nome_parte = normalize_party_name(query_context.get("nome_parte", ""))
+    if nome_parte:
+        items.append(("Parte/Pessoa", nome_parte))
+
+    cpf_cnpj = normalize_document_search_value(query_context.get("cpf_cnpj", ""))
+    if cpf_cnpj:
+        items.append(("CPF/CNPJ", cpf_cnpj))
+
+    texto_livre = normalize_free_text_query(query_context.get("texto_livre", ""))
+    if texto_livre:
+        items.append(("Palavra-chave", texto_livre))
+
     tema_consulta = normalize_assunto_filtro(query_context.get("tema_consulta", ""))
     classe_codigo = int(query_context.get("classe_codigo_referencia", 0) or 0)
-    busca_tema_direto = bool(query_context.get("busca_tema_direto", False))
-    if classe_codigo and not busca_tema_direto and modo_busca != "processo":
+    if classe_codigo and modo_busca == "classe":
         items.append(("Classe CNJ", str(classe_codigo)))
     if tema_consulta:
         items.append(("Tema", tema_consulta))
@@ -2270,14 +2399,17 @@ def classify_decision_outcome_with_context(nome: Any, complementos_texto: Any = 
 def build_process_summary_dataframe(
     df_anpp: pd.DataFrame,
     df_decisao: pd.DataFrame | None = None,
+    hits: Any = None,
 ) -> pd.DataFrame:
     columns = [
         "numero_processo",
+        "tribunal",
         "classe",
         "orgao_julgador",
         "grau",
         "valor_causa",
         "assuntos_resumo",
+        "envolvidos_publicos",
         "data_ajuizamento",
         "ultima_atualizacao",
         "movimentos_carregados",
@@ -2294,15 +2426,26 @@ def build_process_summary_dataframe(
             if numero:
                 detail_map[numero] = detail_row
 
+    source_map: dict[str, dict[str, Any]] = {}
+    if isinstance(hits, list):
+        for hit in hits:
+            numero = extract_hit_process_number(hit)
+            source = hit.get("_source", {}) if isinstance(hit, dict) else {}
+            if numero and isinstance(source, dict):
+                source_map[numero] = source
+
     rows: list[dict[str, Any]] = []
     for _, row in df_anpp.reset_index(drop=True).iterrows():
         numero = str(row.get("numero_processo", "") or "").strip()
+        numero_normalizado = normalize_numero_processo(numero)
         detail_row = detail_map.get(numero, row)
+        source = source_map.get(numero_normalizado, {})
         summary_record = row.copy()
         if isinstance(detail_row, pd.Series):
             for key, value in detail_row.items():
                 if not is_blank_value(value):
                     summary_record[key] = value
+        tribunal = first_non_blank(detail_row.get("tribunal"), row.get("tribunal"), source.get("tribunal"), "")
         classe = first_non_blank(detail_row.get("classe"), row.get("classe"), "")
         orgao = first_non_blank(detail_row.get("orgao_julgador"), row.get("orgao_julgador"), "")
         grau = first_non_blank(detail_row.get("grau"), row.get("grau"), "")
@@ -2333,11 +2476,13 @@ def build_process_summary_dataframe(
         rows.append(
             {
                 "numero_processo": numero,
+                "tribunal": str(tribunal or "").strip().upper(),
                 "classe": str(classe or "").strip(),
                 "orgao_julgador": str(orgao or "").strip(),
                 "grau": str(grau or "").strip(),
                 "valor_causa": format_currency_br(valor_causa),
                 "assuntos_resumo": assuntos_resumo,
+                "envolvidos_publicos": summarize_public_parties_text(source, max_items=3),
                 "data_ajuizamento": format_datetime_label(data_ajuizamento, include_time=False),
                 "ultima_atualizacao": format_datetime_label(ultima_atualizacao),
                 "movimentos_carregados": count_movimentos(summary_record.get("movimentos")),
@@ -2371,6 +2516,7 @@ def build_understanding_search_dataframe(
     hits: Any,
 ) -> pd.DataFrame:
     columns = [
+        "tribunal",
         "numero_processo",
         "classe",
         "assuntos_resumo",
@@ -2382,7 +2528,7 @@ def build_understanding_search_dataframe(
         "envolvidos_publicos",
         "resumo_processo",
     ]
-    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao)
+    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao, hits=hits)
     if process_summary_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -2408,6 +2554,7 @@ def build_understanding_search_dataframe(
         source = source_map.get(numero, {})
         rows.append(
             {
+                "tribunal": str(row.get("tribunal", "") or "").strip().upper(),
                 "numero_processo": str(row.get("numero_processo", "") or "").strip(),
                 "classe": str(row.get("classe", "") or "").strip(),
                 "assuntos_resumo": str(row.get("assuntos_resumo", "") or "").strip(),
@@ -2453,6 +2600,7 @@ def filter_understanding_search_dataframe(df_base: pd.DataFrame, query: str) -> 
         return df_base.copy()
 
     colunas_busca = [
+        "tribunal",
         "numero_processo",
         "classe",
         "assuntos_resumo",
@@ -2483,12 +2631,14 @@ def filter_process_summary_dataframe(df_processos: pd.DataFrame, query: str) -> 
         return df_processos
 
     colunas_busca = [
+        "tribunal",
         "numero_processo",
         "classe",
         "orgao_julgador",
         "grau",
         "valor_causa",
         "assuntos_resumo",
+        "envolvidos_publicos",
         "resumo_processo",
     ]
     base = df_processos[colunas_busca].fillna("").astype(str)
@@ -2506,9 +2656,17 @@ def build_process_metadata_dataframe(
 ) -> pd.DataFrame:
     status_overview = build_process_status_overview(record)
     pessoas_publicas_texto = summarize_public_people_text(raw_source, max_items=3) if isinstance(raw_source, dict) else ""
+    tribunal_informado = str(
+        first_non_blank(
+            record.get("tribunal"),
+            raw_source.get("tribunal") if isinstance(raw_source, dict) else "",
+            tribunal_sigla,
+        ) or ""
+    ).strip().upper()
     dados = [
         ("Numero do processo", str(record.get("numero_processo", "") or "").strip()),
         ("Tribunal da consulta", str(tribunal_sigla or "").upper()),
+        ("Tribunal informado", tribunal_informado),
         ("Classe", str(record.get("classe", "") or "").strip()),
         ("Codigo da classe", str(record.get("classe_codigo", "") or "").strip()),
         ("Grau", str(record.get("grau", "") or "").strip()),
@@ -4137,6 +4295,9 @@ def fetch_hits(
     url: str,
     numero_processo: str = "",
     assunto_nome: str = "",
+    nome_parte: str = "",
+    cpf_cnpj: str = "",
+    texto_livre: str = "",
     data_inicio: Any = None,
     data_fim: Any = None,
     incluir_movimentos: bool = False,
@@ -4147,9 +4308,27 @@ def fetch_hits(
 ) -> list[dict[str, Any]]:
     numero_limpo = normalize_numero_processo(numero_processo)
     assunto_limpo = normalize_assunto_filtro(assunto_nome)
+    nome_parte_limpo = normalize_party_name(nome_parte)
+    cpf_cnpj_limpo = normalize_document_search_value(cpf_cnpj)
+    texto_livre_limpo = normalize_free_text_query(texto_livre)
     filtros: list[dict[str, Any]] = []
+    must_clauses: list[dict[str, Any]] = []
     if numero_limpo:
         filtros.append({"match": {"numeroProcesso": numero_limpo}})
+    elif modo_consulta == "busca_parte":
+        if nome_parte_limpo:
+            must_clauses.append(build_exactish_search_clause(nome_parte_limpo, PARTY_NAME_QUERY_FIELDS))
+        if cpf_cnpj_limpo:
+            must_clauses.append(build_exactish_search_clause(cpf_cnpj_limpo, PARTY_DOCUMENT_QUERY_FIELDS))
+        if texto_livre_limpo:
+            must_clauses.append(build_free_text_search_clause(texto_livre_limpo))
+        if assunto_limpo:
+            filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
+    elif modo_consulta == "texto_livre":
+        if texto_livre_limpo:
+            must_clauses.append(build_free_text_search_clause(texto_livre_limpo))
+        if assunto_limpo:
+            filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
     elif modo_consulta == "mapa_tribunal":
         if assunto_limpo:
             filtros.append({"match_phrase": {"assuntos.nome": assunto_limpo}})
@@ -4165,8 +4344,13 @@ def fetch_hits(
     if filtro_data:
         filtros.append(filtro_data)
 
-    if filtros:
-        query: dict[str, Any] = {"bool": {"filter": filtros}}
+    if filtros or must_clauses:
+        query_bool: dict[str, Any] = {}
+        if filtros:
+            query_bool["filter"] = filtros
+        if must_clauses:
+            query_bool["must"] = must_clauses
+        query = {"bool": query_bool}
     else:
         query = {"match_all": {}}
 
@@ -4272,6 +4456,7 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
 
         rows.append(
             [
+                first_non_blank(source.get("tribunal"), deep_get_path(source, "dadosBasicos.tribunal")),
                 first_non_blank(source.get("numeroProcesso"), deep_get_path(source, "dadosBasicos.numeroProcesso")),
                 first_non_blank(classe.get("codigo"), deep_get_path(source, "dadosBasicos.classe.codigo")),
                 first_non_blank(classe.get("nome"), deep_get_path(source, "dadosBasicos.classe.nome")),
@@ -4289,6 +4474,7 @@ def hits_to_dataframe(hits: list[dict[str, Any]], processar_movimentos: bool = F
         )
 
     columns = [
+        "tribunal",
         "numero_processo",
         "classe_codigo",
         "classe",
@@ -4623,23 +4809,23 @@ def build_map_insights(
     insights: list[str] = []
     if qtd_mapa:
         insights.append(
-            f"O mapa automático foi montado com até {format_int_br(qtd_mapa)} registros recentes da sigla selecionada."
+            f"O panorama complementar foi montado com até {format_int_br(qtd_mapa)} registros do recorte atual."
         )
     if isinstance(top_codigos, pd.DataFrame) and not top_codigos.empty:
         linha = top_codigos.iloc[0]
         insights.append(
-            f"O código mais frequente no mapa da sigla é `{linha['classe_codigo']}`, ligado à classe `{linha['classe']}`, "
+            f"O código mais frequente neste panorama é `{linha['classe_codigo']}`, ligado à classe `{linha['classe']}`, "
             f"com {format_int_br(linha['quantidade'])} ocorrências."
         )
     if isinstance(top_orgaos_sigla, pd.DataFrame) and not top_orgaos_sigla.empty:
         linha = top_orgaos_sigla.iloc[0]
         insights.append(
-            f"O órgão julgador mais frequente no mapa da sigla é `{linha['orgao_julgador']}`, com {format_int_br(linha['quantidade'])} registros."
+            f"O órgão julgador mais frequente neste panorama é `{linha['orgao_julgador']}`, com {format_int_br(linha['quantidade'])} registros."
         )
     if isinstance(top_assuntos, pd.DataFrame) and not top_assuntos.empty:
         linha = top_assuntos.iloc[0]
         insights.append(
-            f"O assunto mais recorrente no mapa da sigla é `{linha['assunto']}`, com {format_int_br(linha['quantidade'])} ocorrências."
+            f"O assunto mais recorrente neste panorama é `{linha['assunto']}`, com {format_int_br(linha['quantidade'])} ocorrências."
         )
     return insights
 
@@ -6128,6 +6314,23 @@ def render() -> None:
             min-height: 8.7rem;
             padding: 0.25rem 0 0.1rem 0;
         }
+        .search-hero {
+            margin: 0.4rem 0 1rem 0;
+            padding: 1rem 1.1rem;
+            border-radius: 1rem;
+            background:
+                radial-gradient(circle at top right, rgba(68, 168, 130, 0.18), transparent 34%),
+                linear-gradient(135deg, rgba(10, 38, 61, 0.95), rgba(16, 75, 92, 0.92));
+            border: 1px solid rgba(105, 197, 170, 0.28);
+            color: #F4FBF8;
+        }
+        .search-hero strong {
+            color: #FFFFFF;
+        }
+        .search-hero p {
+            margin: 0.2rem 0 0 0;
+            line-height: 1.45;
+        }
         .theme-metric-label {
             font-size: 0.98rem;
             font-weight: 600;
@@ -6178,6 +6381,15 @@ def render() -> None:
     )
     st.title("Jurimetria com a API DataJud")
     st.markdown(
+        """
+        <div class="search-hero">
+            <strong>Pesquisa processual + jurimetria em um fluxo so.</strong>
+            <p>Use o mesmo painel para localizar processos por classe, tema, numero, nome de parte e palavras-chave publicas do DataJud, e depois explorar a amostra com filtros, resumos e leitura estrategica.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
         "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
         "GitHub: [@lucaslmfbib](https://github.com/lucaslmfbib) | "
         "LinkedIn: [lucaslmf](https://www.linkedin.com/in/lucaslmf/) | "
@@ -6186,7 +6398,7 @@ def render() -> None:
     api_key = resolve_api_key()
 
     with st.sidebar:
-        st.header("Configuracao")
+        st.header("Painel de busca")
         if api_key:
             st.success("API Key configurada no servidor.")
         else:
@@ -6195,6 +6407,10 @@ def render() -> None:
         st.markdown(
             "[Onde obter API Key (DataJud Wiki)](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
         )
+        st.caption(
+            "Atalho pratico: use `Numero do processo` para um caso exato, `Nome / CPF / parte` para localizar envolvidos publicos e `Palavra-chave ampla` quando quiser uma pesquisa mais livre."
+        )
+        st.divider()
         st.markdown("**1. Onde pesquisar**")
         tribunal_sigla = st.text_input(
             "Tribunal (sigla CNJ)",
@@ -6212,10 +6428,11 @@ def render() -> None:
         )
         st.caption(describe_estrutura_option(estrutura_filtro))
         st.caption(str(estrutura_info["observacao"]))
+        st.divider()
         st.markdown("**2. Como pesquisar**")
         modo_busca_sidebar = st.radio(
             "Modo de busca",
-            options=["classe", "tema", "processo"],
+            options=["classe", "tema", "processo", "parte", "livre"],
             format_func=format_modo_busca_option,
             help="Escolha como voce quer montar a consulta.",
         )
@@ -6223,8 +6440,12 @@ def render() -> None:
             st.caption("Escolha a classe e, se quiser, refine por tema.")
         elif modo_busca_sidebar == "tema":
             st.caption("Pesquise um assunto direto no tribunal, como `plano de saude`.")
-        else:
+        elif modo_busca_sidebar == "processo":
             st.caption("Busque um caso especifico pelo numero unico.")
+        elif modo_busca_sidebar == "parte":
+            st.caption("Use o nome da parte e, se houver base publica suficiente, complemente com CPF/CNPJ e palavra-chave.")
+        else:
+            st.caption("Busca livre em campos publicos relevantes da capa e da movimentacao.")
 
         if "classe_codigo_sidebar" not in st.session_state:
             st.session_state["classe_codigo_sidebar"] = 12729
@@ -6245,6 +6466,9 @@ def render() -> None:
             )
 
         numero_processo = ""
+        nome_parte = ""
+        cpf_cnpj = ""
+        texto_livre = ""
         if modo_busca_sidebar == "processo":
             numero_processo = st.text_input(
                 "Numero do processo",
@@ -6323,7 +6547,7 @@ def render() -> None:
             st.session_state.get(tema_text_key, "")
             or st.session_state.get(tema_select_key, "")
         )
-        tema_consulta = tema_atual_sidebar
+        tema_consulta = tema_atual_sidebar if modo_busca_sidebar in {"classe", "tema"} else ""
         busca_tema_direto_sidebar = modo_busca_sidebar == "tema"
         if usar_numero_processo_sidebar:
             pass
@@ -6337,6 +6561,54 @@ def render() -> None:
                 )
             )
             st.caption("O tema sera buscado em todo o tribunal selecionado.")
+        elif modo_busca_sidebar == "parte":
+            nome_parte = normalize_party_name(
+                st.text_input(
+                    "Nome da pessoa ou empresa",
+                    key="nome_parte_sidebar",
+                    placeholder="Ex.: Joao da Silva, Municipio de Belo Horizonte, Banco X",
+                    help="Busca o nome em campos publicos de partes, envolvidos e participantes.",
+                )
+            )
+            cpf_cnpj = normalize_document_search_value(
+                st.text_input(
+                    "CPF/CNPJ (opcional)",
+                    key="cpf_cnpj_sidebar",
+                    placeholder="Ex.: 12345678900",
+                    help="Busca assistida. Alguns tribunais nao expõem documento no retorno publico.",
+                )
+            )
+            texto_livre = normalize_free_text_query(
+                st.text_input(
+                    "Palavra-chave adicional (opcional)",
+                    key="texto_livre_parte_sidebar",
+                    placeholder="Ex.: liminar, improbidade, execucao fiscal",
+                    help="Ajuda a restringir a busca por parte a um contexto processual mais especifico.",
+                )
+            )
+            st.caption(
+                "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expõe no endpoint publico."
+            )
+        elif modo_busca_sidebar == "livre":
+            texto_livre = normalize_free_text_query(
+                st.text_input(
+                    "Palavra-chave principal",
+                    key="texto_livre_sidebar",
+                    placeholder="Ex.: dano moral telefonia liminar, improbidade, cumprimento de sentenca",
+                    help="Busca ampla em campos publicos relevantes da capa e da movimentacao.",
+                )
+            )
+            tema_consulta = normalize_assunto_filtro(
+                st.text_input(
+                    "Tema exato (opcional)",
+                    key="tema_livre_sidebar",
+                    placeholder="Ex.: consumidor, saude suplementar",
+                    help="Se quiser, combine a palavra-chave com um assunto exato do DataJud.",
+                )
+            )
+            st.caption(
+                "A busca livre consulta texto publico de classe, assunto, orgao, movimentacao e nomes de envolvidos quando houver base publica."
+            )
         else:
             tema_consulta = normalize_assunto_filtro(
                 st.text_input(
@@ -6443,6 +6715,11 @@ def render() -> None:
             st.caption(
                 "A quantidade passa a contar apenas processos com esse tema."
             )
+        if (nome_parte or cpf_cnpj) and modo_busca_sidebar == "parte":
+            st.caption("A quantidade passa a contar apenas processos publicos que bateram com esse nome/documento.")
+        if texto_livre and modo_busca_sidebar in {"parte", "livre"}:
+            st.caption("A palavra-chave adicional atua como filtro textual sobre os campos publicos pesquisaveis.")
+        st.divider()
         st.markdown("**3. Tamanho e velocidade**")
         st.caption(
             "No modo rapido, o app prioriza a resposta principal e pode reduzir leituras complementares."
@@ -6463,9 +6740,9 @@ def render() -> None:
             help="Mostra graficos extras.",
         )
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
-        if modo_busca_sidebar == "tema" and modo_rapido:
+        if modo_busca_sidebar in {"tema", "parte", "livre"} and modo_rapido:
             st.caption(
-                "Na busca por tema com modo rapido, o app respeita a quantidade escolhida e mantem uma leitura estrategica inicial mais leve para nao esconder os comparativos principais."
+                "Nas buscas diretas do tribunal, o modo rapido respeita a quantidade escolhida e mantem uma leitura estrategica inicial mais leve para nao esconder os comparativos principais."
             )
         if size > MAX_PAGE_SIZE:
             st.info(
@@ -6496,10 +6773,33 @@ def render() -> None:
             avisos_consulta: list[str] = []
             try:
                 usar_numero_processo = bool(normalize_numero_processo(numero_processo))
+                nome_parte_limpo = "" if usar_numero_processo else normalize_party_name(nome_parte)
+                cpf_cnpj_limpo = "" if usar_numero_processo else normalize_document_search_value(cpf_cnpj)
+                texto_livre_limpo = "" if usar_numero_processo else normalize_free_text_query(texto_livre)
                 tema_consulta_limpo = "" if usar_numero_processo else normalize_assunto_filtro(tema_consulta)
                 busca_tema_direto = bool(busca_tema_direto_sidebar and tema_consulta_limpo and not usar_numero_processo)
-                classe_codigo_consulta = 0 if busca_tema_direto else int(classe_codigo)
-                modo_consulta_base = "tema_direto" if busca_tema_direto else "classe_ou_processo"
+                busca_parte_direta = bool(
+                    modo_busca_sidebar == "parte"
+                    and (nome_parte_limpo or cpf_cnpj_limpo)
+                    and not usar_numero_processo
+                )
+                busca_texto_direta = bool(
+                    modo_busca_sidebar == "livre"
+                    and texto_livre_limpo
+                    and not usar_numero_processo
+                )
+                busca_direta_sem_classe = bool(
+                    busca_tema_direto or busca_parte_direta or busca_texto_direta
+                )
+                classe_codigo_consulta = 0 if busca_direta_sem_classe else int(classe_codigo)
+                if busca_tema_direto:
+                    modo_consulta_base = "tema_direto"
+                elif busca_parte_direta:
+                    modo_consulta_base = "busca_parte"
+                elif busca_texto_direta:
+                    modo_consulta_base = "texto_livre"
+                else:
+                    modo_consulta_base = "classe_ou_processo"
                 data_inicio_consulta = None if usar_numero_processo else data_inicio
                 data_fim_consulta = None if usar_numero_processo else data_fim
                 if modo_busca_sidebar == "processo" and not usar_numero_processo:
@@ -6507,6 +6807,12 @@ def render() -> None:
                     return
                 if busca_tema_direto_sidebar and not tema_consulta_limpo and not usar_numero_processo:
                     st.error("Preencha o campo Tema para usar a busca direta por tema no tribunal.")
+                    return
+                if modo_busca_sidebar == "parte" and not (nome_parte_limpo or cpf_cnpj_limpo):
+                    st.error("Preencha ao menos o nome da pessoa/empresa ou o CPF/CNPJ para usar esse modo.")
+                    return
+                if modo_busca_sidebar == "livre" and not texto_livre_limpo:
+                    st.error("Preencha a palavra-chave principal para usar a busca ampla.")
                     return
                 if usar_numero_processo and normalize_assunto_filtro(tema_consulta):
                     avisos_consulta.append(
@@ -6516,19 +6822,40 @@ def render() -> None:
                     avisos_consulta.append(
                         "Busca direta por tema ativa: o app ignorou o codigo da classe e pesquisou este tema no tribunal selecionado."
                     )
+                elif busca_parte_direta:
+                    avisos_consulta.append(
+                        "Busca por nome/parte ativa: o app pesquisou envolvidos publicos do tribunal sem depender do codigo da classe."
+                    )
+                    if cpf_cnpj_limpo:
+                        avisos_consulta.append(
+                            "O CPF/CNPJ funciona em modo assistido. Alguns tribunais nao expõem documento no retorno publico ou na indexacao pesquisavel."
+                        )
+                elif busca_texto_direta:
+                    avisos_consulta.append(
+                        "Busca ampla por palavra-chave ativa: o app pesquisou campos publicos relevantes do tribunal sem limitar por classe."
+                    )
                 size_efetivo = int(size)
                 timeout_consulta = DATAJUD_TIMEOUT_SECONDS
-                if busca_tema_direto:
+                if busca_direta_sem_classe:
                     timeout_consulta = THEME_DIRECT_TIMEOUT_SECONDS
                 mapa_size = 0
                 decisao_size = 0
                 if not usar_numero_processo:
                     if modo_rapido:
-                        if busca_tema_direto:
+                        if busca_direta_sem_classe:
                             decisao_size = min(size_efetivo, THEME_DIRECT_FAST_DECISION_LIMIT)
-                            avisos_consulta.append(
-                                "Busca por tema em modo rapido: mantive uma leitura estrategica inicial mais leve para nao sumirem os comparativos principais. Se quiser aprofundar, a estrategia ainda pode ser reforcada depois."
-                            )
+                            if busca_tema_direto:
+                                avisos_consulta.append(
+                                    "Busca por tema em modo rapido: mantive uma leitura estrategica inicial mais leve para nao sumirem os comparativos principais. Se quiser aprofundar, a estrategia ainda pode ser reforcada depois."
+                                )
+                            elif busca_parte_direta:
+                                avisos_consulta.append(
+                                    "Busca por nome/parte em modo rapido: mantive a resposta principal e uma leitura decisoria inicial mais leve para a pesquisa continuar agil."
+                                )
+                            else:
+                                avisos_consulta.append(
+                                    "Busca ampla em modo rapido: mantive a resposta principal e uma leitura decisoria inicial mais leve para nao alongar demais a consulta."
+                                )
                         elif size_efetivo > FAST_COMPLEMENTARY_SKIP_THRESHOLD:
                             decisao_size = min(size_efetivo, FAST_DECISION_SAMPLE_LIMIT)
                             mapa_size = min(size_efetivo, FAST_MAP_SAMPLE_LIMIT)
@@ -6544,7 +6871,7 @@ def render() -> None:
                     decisao_size = 0
 
                 hits_decisao: list[dict[str, Any]] = []
-                if modo_rapido and busca_tema_direto and decisao_size > 0:
+                if modo_rapido and busca_direta_sem_classe and decisao_size > 0:
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         future_hits = executor.submit(
                             fetch_hits,
@@ -6554,6 +6881,9 @@ def render() -> None:
                             url=url,
                             numero_processo=numero_processo,
                             assunto_nome=tema_consulta_limpo,
+                            nome_parte=nome_parte_limpo,
+                            cpf_cnpj=cpf_cnpj_limpo,
+                            texto_livre=texto_livre_limpo,
                             data_inicio=data_inicio_consulta,
                             data_fim=data_fim_consulta,
                             incluir_movimentos=False,
@@ -6568,6 +6898,9 @@ def render() -> None:
                             url=url,
                             numero_processo="",
                             assunto_nome=tema_consulta_limpo,
+                            nome_parte=nome_parte_limpo,
+                            cpf_cnpj=cpf_cnpj_limpo,
+                            texto_livre=texto_livre_limpo,
                             data_inicio=data_inicio_consulta,
                             data_fim=data_fim_consulta,
                             incluir_movimentos=True,
@@ -6585,6 +6918,9 @@ def render() -> None:
                         url=url,
                         numero_processo=numero_processo,
                         assunto_nome=tema_consulta_limpo,
+                        nome_parte=nome_parte_limpo,
+                        cpf_cnpj=cpf_cnpj_limpo,
+                        texto_livre=texto_livre_limpo,
                         data_inicio=data_inicio_consulta,
                         data_fim=data_fim_consulta,
                         incluir_movimentos=bool(usar_numero_processo or not modo_rapido),
@@ -6615,6 +6951,14 @@ def render() -> None:
                         avisos_consulta.append(
                             f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este tema exato neste recorte. Isso normalmente indica que so havia essa quantidade disponivel para o filtro atual."
                         )
+                    elif busca_parte_direta:
+                        avisos_consulta.append(
+                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este nome/documento neste recorte. Isso costuma refletir a disponibilidade publica real do tribunal."
+                        )
+                    elif busca_texto_direta:
+                        avisos_consulta.append(
+                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para esta palavra-chave neste recorte."
+                        )
                     else:
                         avisos_consulta.append(
                             f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este recorte."
@@ -6632,6 +6976,9 @@ def render() -> None:
                                         url=url,
                                         numero_processo="",
                                         assunto_nome=tema_consulta_limpo,
+                                        nome_parte=nome_parte_limpo,
+                                        cpf_cnpj=cpf_cnpj_limpo,
+                                        texto_livre=texto_livre_limpo,
                                         data_inicio=data_inicio_consulta,
                                         data_fim=data_fim_consulta,
                                         incluir_movimentos=True,
@@ -6661,7 +7008,7 @@ def render() -> None:
                     qtd_decisao = len(df_decisao)
 
                 if not usar_numero_processo:
-                    if busca_tema_direto and not df_anpp.empty:
+                    if busca_direta_sem_classe and not df_anpp.empty:
                         df_mapa = df_anpp.copy()
                         top_codigos = top_codigos_dataframe(df_anpp)
                         top_orgaos_sigla = top_orgaos_julgadores_dataframe(df_anpp)
@@ -6707,6 +7054,9 @@ def render() -> None:
                                 url=url,
                                 numero_processo="",
                                 assunto_nome=tema_consulta_limpo,
+                                nome_parte=nome_parte_limpo,
+                                cpf_cnpj=cpf_cnpj_limpo,
+                                texto_livre=texto_livre_limpo,
                                 data_inicio=data_inicio_consulta,
                                 data_fim=data_fim_consulta,
                                 incluir_movimentos=False,
@@ -6764,6 +7114,8 @@ def render() -> None:
         st.session_state["qtd_decisao"] = qtd_decisao
         st.session_state["usar_numero_processo"] = usar_numero_processo
         st.session_state["busca_tema_direto"] = bool(busca_tema_direto)
+        st.session_state["busca_parte_direta"] = bool(busca_parte_direta)
+        st.session_state["busca_texto_direta"] = bool(busca_texto_direta)
         st.session_state["estrutura_filtro"] = estrutura_filtro
         st.session_state["periodo_aplicado"] = format_periodo_aplicado(data_inicio_consulta, data_fim_consulta)
         st.session_state["periodo_ignorado_numero"] = bool(usar_numero_processo and aplicar_periodo)
@@ -6779,12 +7131,17 @@ def render() -> None:
             "data_inicio_consulta": data_inicio_consulta,
             "data_fim_consulta": data_fim_consulta,
             "tema_consulta": tema_consulta_limpo,
+            "nome_parte": nome_parte_limpo,
+            "cpf_cnpj": cpf_cnpj_limpo,
+            "texto_livre": texto_livre_limpo,
             "numero_processo": normalize_numero_processo(numero_processo),
             "query_size": int(size_int),
             "query_size_requested": int(size),
             "qtd_decisao": qtd_decisao,
             "usar_numero_processo": bool(usar_numero_processo),
             "busca_tema_direto": bool(busca_tema_direto),
+            "busca_parte_direta": bool(busca_parte_direta),
+            "busca_texto_direta": bool(busca_texto_direta),
             "modo_rapido": bool(modo_rapido),
         }
         st.session_state["derived_state"] = build_query_derived_state(
@@ -6818,12 +7175,23 @@ def render() -> None:
     qtd_decisao = int(st.session_state.get("qtd_decisao", 0) or 0)
     usar_numero_processo = bool(st.session_state.get("usar_numero_processo", False))
     busca_tema_direto = bool(st.session_state.get("busca_tema_direto", False))
+    busca_parte_direta = bool(st.session_state.get("busca_parte_direta", False))
+    busca_texto_direta = bool(st.session_state.get("busca_texto_direta", False))
     estrutura_filtro = str(st.session_state.get("estrutura_filtro", "Todos"))
     periodo_aplicado = str(st.session_state.get("periodo_aplicado", ""))
     periodo_ignorado_numero = bool(st.session_state.get("periodo_ignorado_numero", False))
     tema_consulta_aplicado = normalize_assunto_filtro(st.session_state.get("tema_consulta_aplicado", ""))
     avisos_consulta = st.session_state.get("avisos_consulta", [])
     last_query_context = st.session_state.get("last_query_context", {})
+    nome_parte_aplicado = normalize_party_name(
+        last_query_context.get("nome_parte", "") if isinstance(last_query_context, dict) else ""
+    )
+    cpf_cnpj_aplicado = normalize_document_search_value(
+        last_query_context.get("cpf_cnpj", "") if isinstance(last_query_context, dict) else ""
+    )
+    texto_livre_aplicado = normalize_free_text_query(
+        last_query_context.get("texto_livre", "") if isinstance(last_query_context, dict) else ""
+    )
     derived_state = st.session_state.get("derived_state")
     derived_state_required_keys = {
         "df_view",
@@ -6932,6 +7300,16 @@ def render() -> None:
         st.caption(f"Filtro tematico aplicado na busca: `{tema_consulta_aplicado}`.")
     if busca_tema_direto and not usar_numero_processo:
         st.caption("Modo de busca ativa: tema direto no tribunal, sem limitar pelo codigo da classe.")
+    if nome_parte_aplicado and not usar_numero_processo:
+        st.caption(f"Parte/pessoa pesquisada: `{shorten_display_label(nome_parte_aplicado, max_chars=110)}`.")
+    if cpf_cnpj_aplicado and not usar_numero_processo:
+        st.caption(f"Documento pesquisado em modo assistido: `{cpf_cnpj_aplicado}`.")
+    if texto_livre_aplicado and not usar_numero_processo:
+        st.caption(f"Palavra-chave aplicada na busca: `{texto_livre_aplicado}`.")
+    if busca_parte_direta and not usar_numero_processo:
+        st.caption("Modo de busca ativa: nome/parte no tribunal, sem limitar pelo codigo da classe.")
+    if busca_texto_direta and not usar_numero_processo:
+        st.caption("Modo de busca ativa: palavra-chave ampla no tribunal, sem limitar pelo codigo da classe.")
     if periodo_aplicado:
         st.caption(f"Filtro temporal aplicado no ajuizamento: {periodo_aplicado}.")
     elif periodo_ignorado_numero:
@@ -6949,7 +7327,7 @@ def render() -> None:
         default_area = "Processos"
     else:
         st.caption(
-            "Comece por `Visao geral` e use `Processos` quando quiser ler a amostra de forma mais organizada, mesmo em buscas por classe ou tema."
+            "Comece por `Visao geral` e use `Processos` quando quiser ler a amostra de forma mais organizada, inclusive nas buscas por nome, parte ou palavra-chave."
         )
         area_options = ["Visao geral", "Processos", "Temas e estrategia", "Busca por entendimento", "Estatisticas", "Mapa do tribunal", "Downloads"]
         default_area = "Visao geral"
@@ -6975,7 +7353,7 @@ def render() -> None:
             st.caption("Esta lista mostra os assuntos distintos encontrados na amostra atual da consulta, com a quantidade de ocorrencias.")
             st.dataframe(assuntos_distintos, use_container_width=True, height=320)
 
-    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao)
+    process_summary_df = build_process_summary_dataframe(df_anpp, df_decisao, hits=raw_hits)
     df_export = df_anpp.copy().reset_index(drop=True)
     if not process_summary_df.empty and len(process_summary_df) == len(df_export):
         df_export["resumo_processo"] = process_summary_df["resumo_processo"].tolist()
@@ -7013,7 +7391,7 @@ def render() -> None:
             process_filter_text = st.text_input(
                 "Buscar processo na amostra atual",
                 key="busca_local_processos",
-                placeholder="Numero, classe, orgao, tema ou trecho do resumo",
+                placeholder="Numero, nome da parte, classe, orgao, tema ou trecho do resumo",
                 help="Filtra os primeiros 400 processos exibidos pela consulta atual.",
             )
             process_preview_df = filter_process_summary_dataframe(process_preview_df, process_filter_text)
@@ -7207,8 +7585,10 @@ def render() -> None:
             st.dataframe(
                 process_preview_df[
                     [
+                        "tribunal",
                         "numero_processo",
                         "classe",
+                        "envolvidos_publicos",
                         "valor_causa",
                         "assuntos_resumo",
                         "orgao_julgador",

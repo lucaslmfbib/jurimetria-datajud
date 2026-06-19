@@ -4,6 +4,9 @@ Aplicacao em Streamlit para analise jurimetrica com dados da API publica DataJud
 
 ## Funcionalidades
 - Consulta por `classe.codigo` ou por `numeroProcesso`
+- Busca direta por `tema` no tribunal
+- Busca processual por `nome da parte/pessoa` com apoio de campos públicos de partes/envolvidos
+- Busca ampla por `palavras-chave` em campos públicos relevantes
 - Selecao de tribunal por sigla (`tjmg`, `tjsp`, `tjrj`, etc.)
 - Tabela de dados e indicadores de resumo
 - Guia rapido de tribunais e codigos: `GUIA_TRIBUNAIS_E_CODIGOS.md`
@@ -55,6 +58,9 @@ export DATAJUD_API_KEY='APIKey SUA_CHAVE'
 
 Referencia:
 - https://datajud-wiki.cnj.jus.br/api-publica/acesso/
+
+Observacao importante sobre CPF/CNPJ:
+- o app pode tentar usar documento em buscas por parte, mas isso depende do que cada tribunal realmente expoe e indexa no endpoint publico do DataJud.
 
 ## Publicacao no Streamlit Community Cloud
 1. Suba este projeto para o GitHub.
