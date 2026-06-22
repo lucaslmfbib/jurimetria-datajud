@@ -6306,56 +6306,227 @@ def save_outputs(
 
 
 def render() -> None:
-    st.set_page_config(page_title="Jurimetria com a API DataJud", layout="wide")
+    st.set_page_config(page_title="DataJud | Pesquisa processual", layout="wide")
     st.markdown(
         """
         <style>
-        .theme-metric-card {
-            min-height: 8.7rem;
-            padding: 0.25rem 0 0.1rem 0;
+        :root {
+            --bg-main: #f4efe6;
+            --bg-panel: rgba(255, 250, 243, 0.94);
+            --bg-panel-solid: #fffaf3;
+            --ink: #1d1b18;
+            --muted: #6f665b;
+            --line: rgba(39, 31, 24, 0.13);
+            --accent: #a45231;
+            --accent-2: #215347;
+            --accent-soft: rgba(164, 82, 49, 0.12);
+            --shadow: 0 18px 48px rgba(48, 31, 20, 0.09);
+            --radius: 8px;
+        }
+        .stApp {
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 7% 5%, rgba(164, 82, 49, 0.16), transparent 27rem),
+                radial-gradient(circle at 88% 2%, rgba(33, 83, 71, 0.13), transparent 26rem),
+                linear-gradient(135deg, #f4efe6 0%, #faf2e7 48%, #eadfce 100%);
+        }
+        [data-testid="stAppViewContainer"] {
+            background: transparent;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(244, 239, 230, 0.72);
+            backdrop-filter: blur(12px);
+        }
+        .main .block-container {
+            max-width: 1280px;
+            padding-top: 1.3rem;
+            padding-bottom: 3rem;
+        }
+        [data-testid="stSidebar"] {
+            background:
+                linear-gradient(180deg, rgba(28, 25, 21, 0.98) 0%, rgba(42, 35, 29, 0.98) 55%, rgba(50, 40, 30, 0.98) 100%);
+            border-right: 1px solid rgba(255, 250, 243, 0.1);
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 1.15rem;
+        }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] small {
+            color: rgba(255, 250, 243, 0.9);
+        }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong {
+            color: #fffaf3;
+            letter-spacing: 0.01em;
+        }
+        [data-testid="stSidebar"] hr {
+            border-color: rgba(255, 250, 243, 0.12);
+            margin: 1rem 0;
+        }
+        [data-testid="stSidebar"] [data-testid="stAlert"] {
+            border-radius: var(--radius);
+            border: 1px solid rgba(255, 250, 243, 0.14);
+        }
+        div[data-baseweb="input"] input,
+        div[data-baseweb="select"] > div,
+        textarea {
+            border-radius: var(--radius);
+        }
+        [data-testid="stSidebar"] div[data-baseweb="input"] input,
+        [data-testid="stSidebar"] div[data-baseweb="select"] > div {
+            background: rgba(255, 250, 243, 0.96);
+            color: var(--ink);
+            border-color: rgba(255, 250, 243, 0.18);
+        }
+        [data-testid="stSidebar"] div[data-baseweb="input"] input::placeholder {
+            color: rgba(29, 27, 24, 0.48);
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] {
+            border: 1px solid rgba(255, 250, 243, 0.12);
+            border-radius: var(--radius);
+            background: rgba(255, 250, 243, 0.045);
+        }
+        [data-testid="stSidebar"] button[kind="primary"],
+        [data-testid="stSidebar"] button[kind="secondary"],
+        [data-testid="stSidebar"] .stButton > button {
+            border-radius: var(--radius);
+            border: 1px solid rgba(255, 250, 243, 0.22);
+            background: #fffaf3;
+            color: var(--ink);
+            font-weight: 700;
+        }
+        [data-testid="stSidebar"] .stButton > button:hover {
+            border-color: rgba(255, 250, 243, 0.72);
+            background: #f3ddc8;
+            color: var(--ink);
+        }
+        h1, h2, h3 {
+            color: var(--ink);
+            letter-spacing: -0.035em;
+        }
+        p, li, label {
+            color: var(--muted);
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.35rem;
+            border-bottom: 1px solid var(--line);
+        }
+        .stTabs [data-baseweb="tab"] {
+            border-radius: var(--radius) var(--radius) 0 0;
+            color: var(--muted);
+            background: rgba(255, 250, 243, 0.56);
+        }
+        .stTabs [aria-selected="true"] {
+            color: var(--ink);
+            background: var(--bg-panel-solid);
         }
         .app-header {
-            margin: 0.15rem 0 1rem 0;
-            padding-bottom: 0.75rem;
-            border-bottom: 1px solid rgba(120, 135, 155, 0.22);
+            position: relative;
+            overflow: hidden;
+            margin: 0.1rem 0 1rem 0;
+            padding: 1.15rem 1.25rem;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background:
+                linear-gradient(135deg, rgba(255, 250, 243, 0.96), rgba(249, 236, 220, 0.88)),
+                radial-gradient(circle at 100% 0%, rgba(33, 83, 71, 0.18), transparent 17rem);
+            box-shadow: var(--shadow);
+        }
+        .app-header::after {
+            content: "";
+            position: absolute;
+            inset: auto 0 0 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        }
+        .app-header-inner {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
         }
         .app-kicker {
-            color: #78A6B8;
-            font-size: 0.82rem;
+            color: var(--accent-2);
+            font-size: 0.76rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0;
-            margin-bottom: 0.25rem;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.28rem;
         }
         .app-header h1 {
             margin: 0;
-            font-size: 2.25rem;
+            color: var(--ink);
+            font-size: clamp(2rem, 4vw, 3.45rem);
             line-height: 1.08;
         }
+        .app-header p {
+            max-width: 46rem;
+            margin: 0.55rem 0 0;
+            color: var(--muted);
+            font-size: 1rem;
+            line-height: 1.5;
+        }
+        .mode-strip {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 0.45rem;
+            max-width: 23rem;
+            padding-top: 0.2rem;
+        }
+        .mode-strip span {
+            display: inline-flex;
+            align-items: center;
+            min-height: 2rem;
+            padding: 0.28rem 0.68rem;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: rgba(255, 250, 243, 0.74);
+            color: var(--ink);
+            font-size: 0.82rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
         .empty-state {
-            border: 1px solid rgba(120, 135, 155, 0.24);
-            border-radius: 8px;
-            padding: 0.85rem 1rem;
-            color: rgba(250, 250, 250, 0.78);
-            background: rgba(120, 135, 155, 0.08);
+            border: 1px dashed rgba(164, 82, 49, 0.34);
+            border-radius: var(--radius);
+            padding: 1.1rem 1.2rem;
+            color: var(--muted);
+            background: rgba(255, 250, 243, 0.72);
+            box-shadow: 0 12px 32px rgba(48, 31, 20, 0.06);
         }
         .empty-state strong {
             display: block;
-            color: rgba(250, 250, 250, 0.94);
+            color: var(--ink);
             margin-bottom: 0.25rem;
         }
+        .theme-metric-card,
+        div[data-testid="stMetric"] {
+            min-height: 8.3rem;
+            padding: 0.95rem 1rem;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: var(--bg-panel);
+            box-shadow: 0 13px 36px rgba(48, 31, 20, 0.06);
+        }
         .theme-metric-label {
-            font-size: 0.98rem;
+            font-size: 0.92rem;
             font-weight: 600;
             line-height: 1.25;
-            color: rgba(250, 250, 250, 0.92);
+            color: var(--muted);
             margin-bottom: 0.45rem;
         }
         .theme-metric-value {
             font-size: clamp(1.7rem, 2vw, 3rem);
             font-weight: 700;
             line-height: 1.02;
-            color: rgba(250, 250, 250, 0.98);
+            color: var(--ink);
             white-space: normal;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -6365,8 +6536,8 @@ def render() -> None:
             margin-top: 0.6rem;
             padding: 0.18rem 0.55rem;
             border-radius: 999px;
-            background: rgba(41, 122, 74, 0.35);
-            color: #9EE6AE;
+            background: rgba(33, 83, 71, 0.1);
+            color: var(--accent-2);
             font-size: 0.9rem;
             line-height: 1.1;
             font-weight: 600;
@@ -6379,6 +6550,7 @@ def render() -> None:
         div[data-testid="stMetricValue"] > div {
             font-size: clamp(1.45rem, 1.9vw, 2.55rem);
             line-height: 1.06;
+            color: var(--ink);
             white-space: normal;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -6388,6 +6560,25 @@ def render() -> None:
             line-height: 1.15;
             white-space: normal;
         }
+        [data-testid="stDataFrame"],
+        [data-testid="stTable"] {
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--line);
+            box-shadow: 0 13px 36px rgba(48, 31, 20, 0.05);
+        }
+        [data-testid="stAlert"] {
+            border-radius: var(--radius);
+        }
+        @media (max-width: 820px) {
+            .app-header-inner {
+                flex-direction: column;
+            }
+            .mode-strip {
+                justify-content: flex-start;
+                max-width: none;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -6395,8 +6586,20 @@ def render() -> None:
     st.markdown(
         """
         <div class="app-header">
-            <div class="app-kicker">DataJud</div>
-            <h1>Busca processual e jurimetria</h1>
+            <div class="app-header-inner">
+                <div>
+                    <div class="app-kicker">DataJud CNJ</div>
+                    <h1>Pesquisa processual</h1>
+                    <p>Busque processos por classe, tema, numero, parte, CPF/CNPJ ou palavras-chave e transforme o retorno publico em jurimetria.</p>
+                </div>
+                <div class="mode-strip">
+                    <span>Classe</span>
+                    <span>Tema</span>
+                    <span>Processo</span>
+                    <span>Parte</span>
+                    <span>Palavra-chave</span>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -6406,9 +6609,9 @@ def render() -> None:
     with st.sidebar:
         st.header("Busca")
         if api_key:
-            st.success("Chave DataJud ativa.")
+            st.caption("Chave DataJud ativa.")
         else:
-            st.error("Chave DataJud ausente.")
+            st.warning("Chave DataJud ausente.")
             with st.expander("Configurar chave", expanded=False):
                 st.caption("Configure DATAJUD_API_KEY em Streamlit Secrets ou como variavel de ambiente local.")
                 st.markdown(
@@ -7139,8 +7342,8 @@ def render() -> None:
         st.markdown(
             """
             <div class="empty-state">
-                <strong>Pronto para pesquisar.</strong>
-                Ajuste os filtros na barra lateral e inicie a consulta no DataJud.
+                <strong>Nenhuma consulta carregada.</strong>
+                Defina o tribunal, escolha o modo de busca e execute a consulta no painel lateral.
             </div>
             """,
             unsafe_allow_html=True,
