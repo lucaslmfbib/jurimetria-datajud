@@ -6306,7 +6306,7 @@ def save_outputs(
 
 
 def render() -> None:
-    st.set_page_config(page_title="DataJud | Pesquisa processual", layout="wide")
+    st.set_page_config(page_title="DataJud | Jurimetria processual", layout="wide")
     st.markdown(
         """
         <style>
@@ -6589,8 +6589,8 @@ def render() -> None:
             <div class="app-header-inner">
                 <div>
                     <div class="app-kicker">DataJud CNJ</div>
-                    <h1>Pesquisa processual</h1>
-                    <p>Busque processos por classe, tema, numero, parte, CPF/CNPJ ou palavras-chave e transforme o retorno publico em jurimetria.</p>
+                    <h1>Jurimetria processual</h1>
+                    <p>Pesquise processos por classe, tema, numero, parte, CPF/CNPJ ou palavras-chave e transforme o retorno publico em indicadores para jurimetria.</p>
                 </div>
                 <div class="mode-strip">
                     <span>Classe</span>
@@ -7343,7 +7343,7 @@ def render() -> None:
             """
             <div class="empty-state">
                 <strong>Nenhuma consulta carregada.</strong>
-                Defina o tribunal, escolha o modo de busca e execute a consulta no painel lateral.
+                Defina o tribunal, escolha o modo de busca e execute a consulta para iniciar a jurimetria.
             </div>
             """,
             unsafe_allow_html=True,
