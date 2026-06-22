@@ -6698,22 +6698,22 @@ def render() -> None:
         }
         .theme-metric-card,
         div[data-testid="stMetric"] {
-            min-height: 8.3rem;
-            padding: 0.95rem 1rem;
+            min-height: 5.9rem;
+            padding: 0.72rem 0.78rem;
             border: 1px solid var(--line);
             border-radius: var(--radius);
             background: var(--bg-panel);
-            box-shadow: 0 13px 36px rgba(48, 31, 20, 0.06);
+            box-shadow: 0 9px 26px rgba(48, 31, 20, 0.05);
         }
         .theme-metric-label {
-            font-size: 0.92rem;
+            font-size: 0.82rem;
             font-weight: 600;
             line-height: 1.25;
             color: var(--muted);
-            margin-bottom: 0.45rem;
+            margin-bottom: 0.28rem;
         }
         .theme-metric-value {
-            font-size: clamp(1.7rem, 2vw, 3rem);
+            font-size: clamp(1.35rem, 1.55vw, 2.15rem);
             font-weight: 700;
             line-height: 1.02;
             color: var(--ink);
@@ -6723,22 +6723,22 @@ def render() -> None:
         }
         .theme-metric-delta {
             display: inline-block;
-            margin-top: 0.6rem;
-            padding: 0.18rem 0.55rem;
+            margin-top: 0.42rem;
+            padding: 0.12rem 0.44rem;
             border-radius: 999px;
             background: rgba(33, 83, 71, 0.1);
             color: var(--accent-2);
-            font-size: 0.9rem;
+            font-size: 0.78rem;
             line-height: 1.1;
             font-weight: 600;
             white-space: normal;
         }
         div[data-testid="stMetric"] label[data-testid="stMetricLabel"] p {
-            font-size: 0.95rem;
+            font-size: 0.82rem;
             line-height: 1.2;
         }
         div[data-testid="stMetricValue"] > div {
-            font-size: clamp(1.45rem, 1.9vw, 2.55rem);
+            font-size: clamp(1.25rem, 1.5vw, 2rem);
             line-height: 1.06;
             color: var(--ink);
             white-space: normal;
@@ -6746,7 +6746,7 @@ def render() -> None:
             word-break: break-word;
         }
         div[data-testid="stMetricDelta"] > div {
-            font-size: 0.9rem;
+            font-size: 0.78rem;
             line-height: 1.15;
             white-space: normal;
         }
