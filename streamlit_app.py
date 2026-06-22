@@ -1097,6 +1097,7 @@ def build_document_search_clause(document_value: str) -> dict[str, Any]:
     should_clauses: list[dict[str, Any]] = []
     for variant in variants:
         should_clauses.append(build_exactish_search_clause(variant, PARTY_DOCUMENT_QUERY_FIELDS))
+        should_clauses.append(build_broad_public_search_clause(variant))
         for field in PARTY_DOCUMENT_QUERY_FIELDS_RAW:
             should_clauses.append({"term": {field: variant}})
             should_clauses.append({"term": {f"{field}.keyword": variant}})
@@ -1104,6 +1105,30 @@ def build_document_search_clause(document_value: str) -> dict[str, Any]:
     return {
         "bool": {
             "should": should_clauses,
+            "minimum_should_match": 1,
+        }
+    }
+
+
+def build_broad_public_search_clause(query_text: str) -> dict[str, Any]:
+    return {
+        "simple_query_string": {
+            "query": str(query_text or "").strip(),
+            "default_operator": "and",
+        }
+    }
+
+
+def build_party_name_search_clause(party_name: str) -> dict[str, Any]:
+    nome = normalize_party_name(party_name)
+    if not nome:
+        return {}
+    return {
+        "bool": {
+            "should": [
+                build_exactish_search_clause(nome, PARTY_NAME_QUERY_FIELDS),
+                build_broad_public_search_clause(nome),
+            ],
             "minimum_should_match": 1,
         }
     }
@@ -4418,7 +4443,9 @@ def fetch_hits(
         filtros.append({"match": {"numeroProcesso": numero_limpo}})
     elif modo_consulta == "busca_parte":
         if nome_parte_limpo:
-            must_clauses.append(build_exactish_search_clause(nome_parte_limpo, PARTY_NAME_QUERY_FIELDS))
+            name_clause = build_party_name_search_clause(nome_parte_limpo)
+            if name_clause:
+                must_clauses.append(name_clause)
         if cpf_cnpj_limpo:
             document_clause = build_document_search_clause(cpf_cnpj_limpo)
             if document_clause:
@@ -6500,19 +6527,72 @@ def render() -> None:
             border-radius: var(--radius);
             background: rgba(255, 250, 243, 0.045);
         }
-        [data-testid="stSidebar"] button[kind="primary"],
-        [data-testid="stSidebar"] button[kind="secondary"],
         [data-testid="stSidebar"] .stButton > button {
             border-radius: var(--radius);
-            border: 1px solid rgba(255, 250, 243, 0.22);
-            background: #fffaf3;
-            color: var(--ink);
+            border: 1px solid rgba(255, 250, 243, 0.28);
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fffaf3 !important;
             font-weight: 700;
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+        }
+        [data-testid="stSidebar"] .stButton > button * {
+            color: #fffaf3 !important;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
             border-color: rgba(255, 250, 243, 0.72);
-            background: #f3ddc8;
-            color: var(--ink);
+            background: linear-gradient(135deg, #bf6240, #2c6a5e);
+            color: #fffaf3 !important;
+        }
+        .author-card {
+            margin: 0.8rem 0 1rem;
+            padding: 0.9rem;
+            border: 1px solid rgba(255, 250, 243, 0.16);
+            border-radius: var(--radius);
+            background: rgba(255, 250, 243, 0.07);
+            box-shadow: inset 0 1px 0 rgba(255, 250, 243, 0.08);
+        }
+        .author-kicker {
+            color: #d6b99f;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            margin-bottom: 0.25rem;
+        }
+        .author-card strong {
+            display: block;
+            color: #fffaf3;
+            font-size: 1rem;
+            line-height: 1.25;
+            margin-bottom: 0.2rem;
+        }
+        .author-card small {
+            display: block;
+            color: rgba(255, 250, 243, 0.72);
+            line-height: 1.35;
+            margin-bottom: 0.65rem;
+        }
+        .author-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+        .author-links a {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.24rem 0.5rem;
+            border: 1px solid rgba(255, 250, 243, 0.2);
+            border-radius: 999px;
+            color: #fffaf3 !important;
+            background: rgba(255, 250, 243, 0.08);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .author-links a:hover {
+            background: rgba(255, 250, 243, 0.16);
+            border-color: rgba(255, 250, 243, 0.45);
+            text-decoration: none;
         }
         h1, h2, h3 {
             color: var(--ink);
@@ -6727,12 +6807,23 @@ def render() -> None:
                 st.markdown(
                     "[Onde obter API Key](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
                 )
-        with st.expander("Sobre", expanded=False):
-            st.caption("Lucas Martins | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736")
-            st.markdown("[GitHub](https://github.com/lucaslmfbib) | [LinkedIn](https://www.linkedin.com/in/lucaslmf/) | [Instagram](https://www.instagram.com/lucaslmf_/)")
-            st.markdown(
-                "[Siglas de tribunais]({}) | [Classes CNJ]({})".format(CNJ_SIGLAS_URL, CNJ_CLASSES_URL)
-            )
+        st.markdown(
+            f"""
+            <div class="author-card">
+                <div class="author-kicker">Sobre o projeto</div>
+                <strong>Criado por Lucas Martins</strong>
+                <small>Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736</small>
+                <div class="author-links">
+                    <a href="https://github.com/lucaslmfbib" target="_blank">GitHub</a>
+                    <a href="https://www.linkedin.com/in/lucaslmf/" target="_blank">LinkedIn</a>
+                    <a href="https://www.instagram.com/lucaslmf_/" target="_blank">Instagram</a>
+                    <a href="{CNJ_SIGLAS_URL}" target="_blank">Tribunais</a>
+                    <a href="{CNJ_CLASSES_URL}" target="_blank">Classes CNJ</a>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.divider()
         st.markdown("**Tribunal**")
         tribunal_sigla = st.text_input(
@@ -6898,6 +6989,10 @@ def render() -> None:
                 st.caption(
                     "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe e indexa no endpoint publico."
                 )
+            st.info(
+                "Limite do DataJud publico: nome, parte e CPF/CNPJ nao sao campos garantidos no glossario oficial. "
+                "Quando o tribunal nao indexa esses dados, a consulta pode voltar vazia mesmo existindo processo."
+            )
         elif modo_busca_sidebar == "livre":
             texto_livre = normalize_free_text_query(
                 st.text_input(
@@ -7260,11 +7355,11 @@ def render() -> None:
                         )
                     elif busca_parte_direta:
                         avisos_consulta.append(
-                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este nome/documento neste recorte. Isso costuma refletir a disponibilidade publica real do tribunal."
+                            f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este nome/documento neste recorte."
                         )
-                        if cpf_cnpj_limpo and not nome_parte_limpo and len(df_anpp) == 0:
+                        if len(df_anpp) == 0:
                             avisos_consulta.append(
-                                "CPF/CNPJ sozinho pode voltar vazio porque o glossario publico do DataJud prioriza metadados de capa e movimentacoes, nao documento de partes. Tente repetir com nome ou razao social junto."
+                                "Resultado zero por nome/CPF nao confirma ausencia de processos: a API publica do DataJud pode nao expor nem indexar dados de partes neste tribunal. Tente numero do processo, classe/tema, palavra-chave ou a consulta publica oficial do tribunal."
                             )
                     elif busca_texto_direta:
                         avisos_consulta.append(
