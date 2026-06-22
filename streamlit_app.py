@@ -125,6 +125,9 @@ PARTY_DOCUMENT_QUERY_FIELDS = [
     "participantes.documento^5",
     "participantes.numeroDocumento^5",
 ]
+PARTY_DOCUMENT_QUERY_FIELDS_RAW = [
+    field.split("^", 1)[0] for field in PARTY_DOCUMENT_QUERY_FIELDS
+]
 FREE_TEXT_QUERY_FIELDS = [
     "numeroProcesso^7",
     "classe.nome^5",
@@ -943,6 +946,34 @@ def normalize_document_search_value(value: Any) -> str:
     return somente_digitos or texto
 
 
+def format_document_display(value: Any) -> str:
+    documento = normalize_document_search_value(value)
+    if not documento:
+        return ""
+    if documento.isdigit():
+        if len(documento) == 11:
+            return f"CPF ***.***.***-{documento[-2:]}"
+        if len(documento) == 14:
+            return f"CNPJ **.***.***/****-{documento[-2:]}"
+        if len(documento) > 4:
+            return f"Documento terminado em {documento[-4:]}"
+    return "Documento informado"
+
+
+def build_document_search_variants(value: Any) -> list[str]:
+    documento = normalize_document_search_value(value)
+    if not documento:
+        return []
+    variants = [documento]
+    if documento.isdigit() and len(documento) == 11:
+        variants.append(f"{documento[:3]}.{documento[3:6]}.{documento[6:9]}-{documento[9:]}")
+    elif documento.isdigit() and len(documento) == 14:
+        variants.append(
+            f"{documento[:2]}.{documento[2:5]}.{documento[5:8]}/{documento[8:12]}-{documento[12:]}"
+        )
+    return list(dict.fromkeys(variants))
+
+
 def normalize_free_text_query(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
@@ -1054,6 +1085,26 @@ def build_exactish_search_clause(
             "fields": fields,
             "type": "phrase",
             "lenient": True,
+        }
+    }
+
+
+def build_document_search_clause(document_value: str) -> dict[str, Any]:
+    variants = build_document_search_variants(document_value)
+    if not variants:
+        return {}
+
+    should_clauses: list[dict[str, Any]] = []
+    for variant in variants:
+        should_clauses.append(build_exactish_search_clause(variant, PARTY_DOCUMENT_QUERY_FIELDS))
+        for field in PARTY_DOCUMENT_QUERY_FIELDS_RAW:
+            should_clauses.append({"term": {field: variant}})
+            should_clauses.append({"term": {f"{field}.keyword": variant}})
+
+    return {
+        "bool": {
+            "should": should_clauses,
+            "minimum_should_match": 1,
         }
     }
 
@@ -1332,7 +1383,7 @@ def build_query_summary_items(query_context: Any) -> list[tuple[str, str]]:
 
     cpf_cnpj = normalize_document_search_value(query_context.get("cpf_cnpj", ""))
     if cpf_cnpj:
-        items.append(("CPF/CNPJ", cpf_cnpj))
+        items.append(("CPF/CNPJ", format_document_display(cpf_cnpj)))
 
     texto_livre = normalize_free_text_query(query_context.get("texto_livre", ""))
     if texto_livre:
@@ -1406,6 +1457,55 @@ def format_party_role_label(role: Any) -> str:
         return labels[normalized]
     role_text = str(role or "").strip()
     return role_text or "Papel nao informado"
+
+
+def source_has_document_value(source: Any, document_value: Any, max_depth: int = 8) -> bool:
+    target = normalize_document_search_value(document_value)
+    if not target:
+        return False
+
+    document_key_tokens = {
+        "cpf",
+        "cnpj",
+        "cpfcnpj",
+        "documento",
+        "numerodocumento",
+        "documentoprincipal",
+        "documentoparte",
+        "cpfparte",
+        "cnpjparte",
+    }
+
+    def walk(node: Any, key_hint: str = "", depth: int = 0) -> bool:
+        if depth > max_depth or node is None:
+            return False
+        if isinstance(node, dict):
+            for key, value in node.items():
+                normalized_key = normalize_field_key_name(str(key))
+                if normalized_key in document_key_tokens and not is_blank_value(value):
+                    if normalize_document_search_value(value) == target:
+                        return True
+                if walk(value, normalized_key, depth + 1):
+                    return True
+            return False
+        if isinstance(node, list):
+            return any(walk(item, key_hint, depth + 1) for item in node)
+        if key_hint in document_key_tokens and not is_blank_value(node):
+            return normalize_document_search_value(node) == target
+        return False
+
+    return walk(source)
+
+
+def filter_hits_by_public_document(hits: Any, document_value: Any) -> list[dict[str, Any]]:
+    if not isinstance(hits, list):
+        return []
+    filtered: list[dict[str, Any]] = []
+    for hit in hits:
+        source = hit.get("_source", {}) if isinstance(hit, dict) else {}
+        if isinstance(source, dict) and source_has_document_value(source, document_value):
+            filtered.append(hit)
+    return filtered
 
 
 def extract_public_party_entries(source: Any, max_depth: int = 6) -> list[dict[str, str]]:
@@ -4313,13 +4413,19 @@ def fetch_hits(
     texto_livre_limpo = normalize_free_text_query(texto_livre)
     filtros: list[dict[str, Any]] = []
     must_clauses: list[dict[str, Any]] = []
+    should_clauses: list[dict[str, Any]] = []
     if numero_limpo:
         filtros.append({"match": {"numeroProcesso": numero_limpo}})
     elif modo_consulta == "busca_parte":
         if nome_parte_limpo:
             must_clauses.append(build_exactish_search_clause(nome_parte_limpo, PARTY_NAME_QUERY_FIELDS))
         if cpf_cnpj_limpo:
-            must_clauses.append(build_exactish_search_clause(cpf_cnpj_limpo, PARTY_DOCUMENT_QUERY_FIELDS))
+            document_clause = build_document_search_clause(cpf_cnpj_limpo)
+            if document_clause:
+                if nome_parte_limpo:
+                    should_clauses.append(document_clause)
+                else:
+                    must_clauses.append(document_clause)
         if texto_livre_limpo:
             must_clauses.append(build_free_text_search_clause(texto_livre_limpo))
         if assunto_limpo:
@@ -4344,12 +4450,16 @@ def fetch_hits(
     if filtro_data:
         filtros.append(filtro_data)
 
-    if filtros or must_clauses:
+    if filtros or must_clauses or should_clauses:
         query_bool: dict[str, Any] = {}
         if filtros:
             query_bool["filter"] = filtros
         if must_clauses:
             query_bool["must"] = must_clauses
+        if should_clauses:
+            query_bool["should"] = should_clauses
+            if not filtros and not must_clauses:
+                query_bool["minimum_should_match"] = 1
         query = {"bool": query_bool}
     else:
         query = {"match_all": {}}
@@ -6770,10 +6880,10 @@ def render() -> None:
             )
             cpf_cnpj = normalize_document_search_value(
                 st.text_input(
-                    "CPF/CNPJ (opcional)",
+                    "CPF/CNPJ (opcional, melhor com nome)",
                     key="cpf_cnpj_sidebar",
                     placeholder="Ex.: 12345678900",
-                    help="Busca assistida. Alguns tribunais nao expõem documento no retorno publico.",
+                    help="Tenta conferir documento quando o tribunal expoe esse dado. Para localizar melhor, informe tambem o nome ou razao social.",
                 )
             )
             texto_livre = normalize_free_text_query(
@@ -6786,7 +6896,7 @@ def render() -> None:
             )
             with st.expander("Nota sobre CPF/CNPJ", expanded=False):
                 st.caption(
-                    "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe no endpoint publico."
+                    "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe e indexa no endpoint publico."
                 )
         elif modo_busca_sidebar == "livre":
             texto_livre = normalize_free_text_query(
@@ -7010,7 +7120,7 @@ def render() -> None:
                     )
                     if cpf_cnpj_limpo:
                         avisos_consulta.append(
-                            "O CPF/CNPJ funciona em modo assistido. Alguns tribunais nao expõem documento no retorno publico ou na indexacao pesquisavel."
+                            "O CPF/CNPJ funciona em modo assistido: quando o tribunal nao expoe documento pesquisavel, use tambem o nome/razao social para localizar os processos e conferir manualmente."
                         )
                 elif busca_texto_direta:
                     avisos_consulta.append(
@@ -7110,6 +7220,21 @@ def render() -> None:
                         full_source=bool(usar_numero_processo),
                         timeout_seconds=timeout_consulta,
                     )
+                if busca_parte_direta and nome_parte_limpo and cpf_cnpj_limpo and hits:
+                    hits_com_documento = filter_hits_by_public_document(hits, cpf_cnpj_limpo)
+                    if hits_com_documento:
+                        hits = hits_com_documento
+                        if hits_decisao:
+                            hits_decisao_filtrados = filter_hits_by_public_document(hits_decisao, cpf_cnpj_limpo)
+                            if hits_decisao_filtrados:
+                                hits_decisao = hits_decisao_filtrados
+                        avisos_consulta.append(
+                            "Consegui confirmar o documento em campos publicos retornados pelo tribunal e filtrei a amostra por essa confirmacao."
+                        )
+                    else:
+                        avisos_consulta.append(
+                            "O tribunal retornou resultados pelo nome, mas nao trouxe o documento em campo publico confirmavel nesta amostra. Revise os envolvidos antes de usar a leitura como identificacao individual."
+                        )
                 df_anpp = hits_to_dataframe(
                     hits,
                     processar_movimentos=bool(usar_numero_processo or not modo_rapido),
@@ -7137,6 +7262,10 @@ def render() -> None:
                         avisos_consulta.append(
                             f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para este nome/documento neste recorte. Isso costuma refletir a disponibilidade publica real do tribunal."
                         )
+                        if cpf_cnpj_limpo and not nome_parte_limpo and len(df_anpp) == 0:
+                            avisos_consulta.append(
+                                "CPF/CNPJ sozinho pode voltar vazio porque o glossario publico do DataJud prioriza metadados de capa e movimentacoes, nao documento de partes. Tente repetir com nome ou razao social junto."
+                            )
                     elif busca_texto_direta:
                         avisos_consulta.append(
                             f"Voce pediu {format_int_br(size_int)} registros, mas o DataJud retornou {format_int_br(len(df_anpp))} processos para esta palavra-chave neste recorte."
@@ -7493,7 +7622,7 @@ def render() -> None:
     if nome_parte_aplicado and not usar_numero_processo:
         st.caption(f"Parte/pessoa pesquisada: `{shorten_display_label(nome_parte_aplicado, max_chars=110)}`.")
     if cpf_cnpj_aplicado and not usar_numero_processo:
-        st.caption(f"Documento pesquisado em modo assistido: `{cpf_cnpj_aplicado}`.")
+        st.caption(f"Documento pesquisado em modo assistido: `{format_document_display(cpf_cnpj_aplicado)}`.")
     if texto_livre_aplicado and not usar_numero_processo:
         st.caption(f"Palavra-chave aplicada na busca: `{texto_livre_aplicado}`.")
     if busca_parte_direta and not usar_numero_processo:
