@@ -6314,22 +6314,35 @@ def render() -> None:
             min-height: 8.7rem;
             padding: 0.25rem 0 0.1rem 0;
         }
-        .search-hero {
-            margin: 0.4rem 0 1rem 0;
-            padding: 1rem 1.1rem;
-            border-radius: 1rem;
-            background:
-                radial-gradient(circle at top right, rgba(68, 168, 130, 0.18), transparent 34%),
-                linear-gradient(135deg, rgba(10, 38, 61, 0.95), rgba(16, 75, 92, 0.92));
-            border: 1px solid rgba(105, 197, 170, 0.28);
-            color: #F4FBF8;
+        .app-header {
+            margin: 0.15rem 0 1rem 0;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid rgba(120, 135, 155, 0.22);
         }
-        .search-hero strong {
-            color: #FFFFFF;
+        .app-kicker {
+            color: #78A6B8;
+            font-size: 0.82rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            margin-bottom: 0.25rem;
         }
-        .search-hero p {
-            margin: 0.2rem 0 0 0;
-            line-height: 1.45;
+        .app-header h1 {
+            margin: 0;
+            font-size: 2.25rem;
+            line-height: 1.08;
+        }
+        .empty-state {
+            border: 1px solid rgba(120, 135, 155, 0.24);
+            border-radius: 8px;
+            padding: 0.85rem 1rem;
+            color: rgba(250, 250, 250, 0.78);
+            background: rgba(120, 135, 155, 0.08);
+        }
+        .empty-state strong {
+            display: block;
+            color: rgba(250, 250, 250, 0.94);
+            margin-bottom: 0.25rem;
         }
         .theme-metric-label {
             font-size: 0.98rem;
@@ -6379,45 +6392,41 @@ def render() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.title("Jurimetria com a API DataJud")
     st.markdown(
         """
-        <div class="search-hero">
-            <strong>Pesquisa processual + jurimetria em um fluxo so.</strong>
-            <p>Use o mesmo painel para localizar processos por classe, tema, numero, nome de parte e palavras-chave publicas do DataJud, e depois explorar a amostra com filtros, resumos e leitura estrategica.</p>
+        <div class="app-header">
+            <div class="app-kicker">DataJud</div>
+            <h1>Busca processual e jurimetria</h1>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(
-        "Por **Lucas Martins** | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736  \n"
-        "GitHub: [@lucaslmfbib](https://github.com/lucaslmfbib) | "
-        "LinkedIn: [lucaslmf](https://www.linkedin.com/in/lucaslmf/) | "
-        "Instagram: [@lucaslmf_](https://www.instagram.com/lucaslmf_/)"
-    )
     api_key = resolve_api_key()
 
     with st.sidebar:
-        st.header("Painel de busca")
+        st.header("Busca")
         if api_key:
-            st.success("API Key configurada no servidor.")
+            st.success("Chave DataJud ativa.")
         else:
-            st.error("API Key nao configurada no servidor.")
-            st.caption("Configure DATAJUD_API_KEY em Streamlit Secrets (ou variavel de ambiente local).")
-        st.markdown(
-            "[Onde obter API Key (DataJud Wiki)](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
-        )
-        st.caption(
-            "Atalho pratico: use `Numero do processo` para um caso exato, `Nome / CPF / parte` para localizar envolvidos publicos e `Palavra-chave ampla` quando quiser uma pesquisa mais livre."
-        )
+            st.error("Chave DataJud ausente.")
+            with st.expander("Configurar chave", expanded=False):
+                st.caption("Configure DATAJUD_API_KEY em Streamlit Secrets ou como variavel de ambiente local.")
+                st.markdown(
+                    "[Onde obter API Key](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
+                )
+        with st.expander("Sobre", expanded=False):
+            st.caption("Lucas Martins | Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736")
+            st.markdown("[GitHub](https://github.com/lucaslmfbib) | [LinkedIn](https://www.linkedin.com/in/lucaslmf/) | [Instagram](https://www.instagram.com/lucaslmf_/)")
+            st.markdown(
+                "[Siglas de tribunais]({}) | [Classes CNJ]({})".format(CNJ_SIGLAS_URL, CNJ_CLASSES_URL)
+            )
         st.divider()
-        st.markdown("**1. Onde pesquisar**")
+        st.markdown("**Tribunal**")
         tribunal_sigla = st.text_input(
             "Tribunal (sigla CNJ)",
             value="tjmg",
             help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
         )
-        st.markdown(f"[Consultar siglas de tribunais (CNJ)]({CNJ_SIGLAS_URL})")
         estrutura_info = get_estrutura_options(tribunal_sigla)
         estrutura_filtro = st.selectbox(
             "Recorte estrutural (opcional)",
@@ -6426,26 +6435,17 @@ def render() -> None:
             format_func=format_estrutura_option,
             help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
         )
-        st.caption(describe_estrutura_option(estrutura_filtro))
-        st.caption(str(estrutura_info["observacao"]))
+        with st.expander("Detalhe do recorte", expanded=False):
+            st.caption(describe_estrutura_option(estrutura_filtro))
+            st.caption(str(estrutura_info["observacao"]))
         st.divider()
-        st.markdown("**2. Como pesquisar**")
+        st.markdown("**Pesquisa**")
         modo_busca_sidebar = st.radio(
             "Modo de busca",
             options=["classe", "tema", "processo", "parte", "livre"],
             format_func=format_modo_busca_option,
             help="Escolha como voce quer montar a consulta.",
         )
-        if modo_busca_sidebar == "classe":
-            st.caption("Escolha a classe e, se quiser, refine por tema.")
-        elif modo_busca_sidebar == "tema":
-            st.caption("Pesquise um assunto direto no tribunal, como `plano de saude`.")
-        elif modo_busca_sidebar == "processo":
-            st.caption("Busque um caso especifico pelo numero unico.")
-        elif modo_busca_sidebar == "parte":
-            st.caption("Use o nome da parte e, se houver base publica suficiente, complemente com CPF/CNPJ e palavra-chave.")
-        else:
-            st.caption("Busca livre em campos publicos relevantes da capa e da movimentacao.")
 
         if "classe_codigo_sidebar" not in st.session_state:
             st.session_state["classe_codigo_sidebar"] = 12729
@@ -6460,10 +6460,8 @@ def render() -> None:
                     help="Codigo CNJ do tipo de processo ou recurso.",
                 )
             )
-            render_codigo_sugestoes(tribunal_sigla)
-            st.markdown(
-                f"[Consultar codigos de classe (CNJ)]({CNJ_CLASSES_URL})"
-            )
+            with st.expander("Codigos sugeridos", expanded=False):
+                render_codigo_sugestoes(tribunal_sigla)
 
         numero_processo = ""
         nome_parte = ""
@@ -6486,8 +6484,6 @@ def render() -> None:
                 value=False,
                 help="Limita a busca a um intervalo de ajuizamento.",
             )
-        else:
-            st.caption("Neste modo, o app ignora periodo e outros filtros para priorizar o caso exato.")
         if aplicar_periodo:
             hoje = date.today()
             inicio_padrao = date(hoje.year, 1, 1)
@@ -6560,7 +6556,6 @@ def render() -> None:
                     help="Use o assunto como filtro principal.",
                 )
             )
-            st.caption("O tema sera buscado em todo o tribunal selecionado.")
         elif modo_busca_sidebar == "parte":
             nome_parte = normalize_party_name(
                 st.text_input(
@@ -6586,9 +6581,10 @@ def render() -> None:
                     help="Ajuda a restringir a busca por parte a um contexto processual mais especifico.",
                 )
             )
-            st.caption(
-                "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expõe no endpoint publico."
-            )
+            with st.expander("Nota sobre CPF/CNPJ", expanded=False):
+                st.caption(
+                    "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe no endpoint publico."
+                )
         elif modo_busca_sidebar == "livre":
             texto_livre = normalize_free_text_query(
                 st.text_input(
@@ -6605,9 +6601,6 @@ def render() -> None:
                     placeholder="Ex.: consumidor, saude suplementar",
                     help="Se quiser, combine a palavra-chave com um assunto exato do DataJud.",
                 )
-            )
-            st.caption(
-                "A busca livre consulta texto publico de classe, assunto, orgao, movimentacao e nomes de envolvidos quando houver base publica."
             )
         else:
             tema_consulta = normalize_assunto_filtro(
@@ -6711,47 +6704,33 @@ def render() -> None:
                     st.caption(
                         f"{format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
                     )
-        if tema_consulta and not usar_numero_processo_sidebar:
-            st.caption(
-                "A quantidade passa a contar apenas processos com esse tema."
-            )
-        if (nome_parte or cpf_cnpj) and modo_busca_sidebar == "parte":
-            st.caption("A quantidade passa a contar apenas processos publicos que bateram com esse nome/documento.")
-        if texto_livre and modo_busca_sidebar in {"parte", "livre"}:
-            st.caption("A palavra-chave adicional atua como filtro textual sobre os campos publicos pesquisaveis.")
         st.divider()
-        st.markdown("**3. Tamanho e velocidade**")
-        st.caption(
-            "No modo rapido, o app prioriza a resposta principal e pode reduzir leituras complementares."
-        )
-        modo_rapido = st.checkbox(
-            "Modo rapido (recomendado)",
-            value=True,
-            help="Acelera a resposta.",
-        )
-        ampliar_historico = st.checkbox(
-            "Ampliar historico mensal automaticamente (mais lento)",
-            value=False,
-            help="Tenta preencher melhor o grafico mensal.",
-        )
-        mostrar_graficos_avancados = st.checkbox(
-            "Exibir graficos avancados (mais lento)",
-            value=False,
-            help="Mostra graficos extras.",
-        )
+        st.markdown("**Execucao**")
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
-        if modo_busca_sidebar in {"tema", "parte", "livre"} and modo_rapido:
-            st.caption(
-                "Nas buscas diretas do tribunal, o modo rapido respeita a quantidade escolhida e mantem uma leitura estrategica inicial mais leve para nao esconder os comparativos principais."
+        auto_url = build_url(tribunal_sigla)
+        url = auto_url
+        with st.expander("Ajustes avancados", expanded=False):
+            modo_rapido = st.checkbox(
+                "Modo rapido",
+                value=True,
+                help="Acelera a resposta e reduz leituras complementares.",
             )
+            ampliar_historico = st.checkbox(
+                "Ampliar historico mensal",
+                value=False,
+                help="Tenta preencher melhor o grafico mensal.",
+            )
+            mostrar_graficos_avancados = st.checkbox(
+                "Exibir graficos avancados",
+                value=False,
+                help="Mostra graficos extras.",
+            )
+            st.caption(f"Endpoint: {url}")
         if size > MAX_PAGE_SIZE:
             st.info(
                 "Acima de 10.000 registros, o app pagina automaticamente a consulta no DataJud. "
                 "Isso pode deixar a resposta mais lenta."
             )
-        auto_url = build_url(tribunal_sigla)
-        url = auto_url
-        st.caption(f"URL usada: {url}")
         executar = st.button("Buscar no DataJud", use_container_width=True)
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
@@ -7157,7 +7136,15 @@ def render() -> None:
         st.success(f"Consulta concluida em {elapsed:.1f}s. Registros: {len(df_anpp)}")
 
     if "df_anpp" not in st.session_state:
-        st.info("Preencha os filtros e clique em 'Buscar no DataJud'. Comece com 1000 ou 2000 registros.")
+        st.markdown(
+            """
+            <div class="empty-state">
+                <strong>Pronto para pesquisar.</strong>
+                Ajuste os filtros na barra lateral e inicie a consulta no DataJud.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         return
 
     df_anpp = st.session_state["df_anpp"]
