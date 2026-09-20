@@ -7052,6 +7052,7 @@ def render() -> None:
                     <div class="author-top-name">Criado por Lucas Martins</div>
                     <div class="author-top-sub">Bibliotecário e Advogado | CRB6-3621 | OAB/MG 243736</div>
                     <div class="author-top-links">
+                        <a href="https://datajud-wiki.cnj.jus.br/" target="_blank" style="background: linear-gradient(135deg, #d4af37, #f59e0b); color: #0f2c59 !important; font-weight: 800; border-color: #ffd700;">📘 Documentação DataJud</a>
                         <a href="https://github.com/lucaslmfbib" target="_blank">GitHub</a>
                         <a href="https://www.linkedin.com/in/lucaslmf/" target="_blank">LinkedIn</a>
                         <a href="https://www.instagram.com/lucaslmf_/" target="_blank">Instagram</a>
@@ -7975,13 +7976,19 @@ def render() -> None:
         else:
             c4.metric("Valor da causa", "Sem base")
 
+        st.markdown("**💰 Valor da Causa na Amostra (Estatísticas Financeiras)**")
+        vc_g1, vc_g2, vc_g3, vc_g4 = st.columns(4)
         if int(valor_causa_info["com_valor"] or 0) > 0:
-            st.markdown("**💰 Valor da Causa na Amostra (Estatísticas Financeiras)**")
-            vc_g1, vc_g2, vc_g3, vc_g4 = st.columns(4)
             vc_g1.metric("Valor Medio", format_currency_br(valor_causa_info["media"]))
             vc_g2.metric("Mediana", format_currency_br(valor_causa_info["mediana"]), delta="50% dos casos")
             vc_g3.metric("Valor Minimo", format_currency_br(valor_causa_info["minimo"]))
             vc_g4.metric("Valor Maximo", format_currency_br(valor_causa_info["maximo"]))
+        else:
+            vc_g1.metric("Valor Medio", "Sem dados")
+            vc_g2.metric("Mediana", "Sem dados")
+            vc_g3.metric("Valor Minimo", "Sem dados")
+            vc_g4.metric("Valor Maximo", "Sem dados")
+            st.caption("ℹ️ *Os processos retornados pela API do DataJud nesta consulta não trouxeram o campo de valor da causa preenchido pelo tribunal.*")
 
         if stats_tempo_geral["total_validos"] > 0:
             st.markdown("**⏱️ Tempo de Finalizacao / Tramitacao dos Processos (Visao Geral)**")
@@ -10124,8 +10131,15 @@ def render() -> None:
                 st.markdown("**Valor da causa por classe**")
                 st.dataframe(valor_classe_df, use_container_width=True, height=320)
         else:
+            vc1, vc2, vc3, vc4, vc5, vc6 = st.columns(6)
+            vc1.metric("Processos com valor", "0")
+            vc2.metric("Cobertura", "0.0%")
+            vc3.metric("Media", "Sem dados")
+            vc4.metric("Mediana", "Sem dados")
+            vc5.metric("Valor Minimo", "Sem dados")
+            vc6.metric("Valor Maximo", "Sem dados")
             st.info(
-                "Nesta amostra, o retorno publico nao trouxe valor da causa suficiente para montar estatisticas."
+                "ℹ️ **Nota sobre o Valor da Causa**: O preenchimento do campo `valorCausa` na API pública do DataJud depende de cada tribunal. Nesta consulta específica, a API não retornou valores de causa para os processos retornados."
             )
 
         ranking_envolvidos_df = build_party_ranking_dataframe(raw_hits_stats)
@@ -10506,14 +10520,15 @@ def render() -> None:
         st.caption(
             "Aqui ficam os sinais mais importantes da amostra para o usuario entender rapidamente o recorte antes de entrar nas outras areas."
         )
-        pi1, pi2, pi3, pi4 = st.columns(4)
+        pi1, pi2, pi3, pi4, pi5 = st.columns(5)
         pi1.metric("Classe lider", top_classe_nome, delta=f"{top_classe_qtd} processos" if top_classe_qtd else None)
         pi2.metric("Tema lider", top_assunto_nome, delta=f"{top_assunto_qtd} ocorrencias" if top_assunto_qtd else None)
         pi3.metric("Orgao lider", top_orgao_nome, delta=top_orgao_part or None)
         if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
             pi4.metric("Mediana valor da causa", format_currency_br(valor_causa_info.get("mediana")))
         else:
-            pi4.metric("Pico mensal", pico_mensal)
+            pi4.metric("Mediana valor da causa", "Sem dados")
+        pi5.metric("Pico mensal", pico_mensal)
 
         if isinstance(decision_overview, dict):
             d1, d2, d3, d4 = st.columns(4)
