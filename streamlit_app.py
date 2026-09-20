@@ -7045,7 +7045,7 @@ def render() -> None:
         <div class="app-header">
             <div class="app-header-inner">
                 <div>
-                    <div class="app-kicker">⚖️ <a href="https://tenhodireito.online" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar Portal Tenho Direito">PORTAL TENHO DIREITO</a> • JURIMETRIA DATAJUD</div>
+                    <div class="app-kicker">⚖️ <a href="https://tenhodireito.online" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar Portal Tenho Direito">PORTAL TENHO DIREITO</a> • <a href="https://www.cnj.jus.br/sistemas/datajud/" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar DataJud CNJ">JURIMETRIA DATAJUD</a></div>
                     <h1>Jurimetria Processual</h1>
                     <p>Pesquise e analise dados públicos do DataJud: tempos de tramitação (média, mediana, mínimo e máximo), desfechos, valores de causa e comparações por temas e tribunais.</p>
                 </div>
