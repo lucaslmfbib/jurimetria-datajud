@@ -17,6 +17,7 @@ import requests
 from requests import HTTPError, RequestException, Timeout
 import streamlit as st
 
+DEFAULT_DATAJUD_API_KEY = "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="
 URL_PADRAO = "https://api-publica.datajud.cnj.jus.br/api_publica_tjmg/_search"
 URL_TEMPLATE = "https://api-publica.datajud.cnj.jus.br/api_publica_{tribunal}/_search"
 CNJ_SIGLAS_URL = "https://www.cnj.jus.br/poder-judiciario/tribunais/"
@@ -499,13 +500,16 @@ def get_plt() -> Any:
 
 
 def resolve_api_key() -> str:
+    if "custom_api_key" in st.session_state and str(st.session_state.get("custom_api_key", "")).strip():
+        return str(st.session_state["custom_api_key"]).strip()
     key_secret = ""
     try:
         key_secret = str(st.secrets.get("DATAJUD_API_KEY", "")).strip()
     except Exception:
         key_secret = ""
     key_env = os.getenv("DATAJUD_API_KEY", "").strip()
-    return key_secret or key_env
+    key_default = DEFAULT_DATAJUD_API_KEY.strip()
+    return key_secret or key_env or key_default
 
 
 def normalize_api_key(raw_key: str) -> str:
@@ -6004,6 +6008,185 @@ def fig_fluxo_mensal(df_anpp: pd.DataFrame, max_meses: int = 12) -> Any:
     return fig
 
 
+def calcular_estatisticas_tempo_tramitacao(df_anpp: pd.DataFrame) -> dict:
+    """Calcula estatisticas detalhadas de tempo de finalizacao/tramitacao dos processos.
+
+    Retorna um dicionario com:
+    - total_validos
+    - tempo_medio_dias, tempo_medio_str
+    - mediana_dias, mediana_str
+    - minimo_dias, minimo_str
+    - maximo_dias, maximo_str
+    - dias_series
+    """
+    default_res = {
+        "total_validos": 0,
+        "tempo_medio_dias": 0.0,
+        "tempo_medio_str": "Sem base",
+        "mediana_dias": 0.0,
+        "mediana_str": "Sem base",
+        "minimo_dias": 0.0,
+        "minimo_str": "Sem base",
+        "maximo_dias": 0.0,
+        "maximo_str": "Sem base",
+        "dias_series": pd.Series(dtype=float),
+    }
+
+    if df_anpp is None or df_anpp.empty:
+        return default_res
+
+    cols_necessarias = ["data_ajuizamento", "ultima_atualizacao"]
+    if not all(col in df_anpp.columns for col in cols_necessarias):
+        return default_res
+
+    base = df_anpp[["data_ajuizamento", "ultima_atualizacao"]].dropna()
+    if base.empty:
+        return default_res
+
+    aju = base["data_ajuizamento"]
+    atu = base["ultima_atualizacao"]
+    if getattr(aju.dt, "tz", None) is not None:
+        aju = aju.dt.tz_convert("UTC").dt.tz_localize(None)
+    if getattr(atu.dt, "tz", None) is not None:
+        atu = atu.dt.tz_convert("UTC").dt.tz_localize(None)
+
+    dias = (atu - aju).dt.total_seconds() / 86400.0
+    dias = dias[(dias >= 0) & (dias.notna())]
+
+    if dias.empty:
+        return default_res
+
+    def _format_dias(val_dias: float) -> str:
+        if val_dias < 1.0:
+            return f"{val_dias:.1f} dias"
+        val_int = int(round(val_dias))
+        if val_int < 30:
+            return f"{val_int} dias"
+        elif val_int < 365:
+            meses = val_int / 30.4375
+            return f"{val_int} dias (~{meses:.1f} meses)"
+        else:
+            anos = val_int / 365.25
+            return f"{val_int:,} dias (~{anos:.1f} anos)".replace(",", ".")
+
+    tempo_medio = float(dias.mean())
+    mediana = float(dias.median())
+    minimo = float(dias.min())
+    maximo = float(dias.max())
+
+    return {
+        "total_validos": len(dias),
+        "tempo_medio_dias": tempo_medio,
+        "tempo_medio_str": _format_dias(tempo_medio),
+        "mediana_dias": mediana,
+        "mediana_str": _format_dias(mediana),
+        "minimo_dias": minimo,
+        "minimo_str": _format_dias(minimo),
+        "maximo_dias": maximo,
+        "maximo_str": _format_dias(maximo),
+        "dias_series": dias,
+    }
+
+
+def fig_tempo_tramitacao_por_tema_boxplot(df_anpp: pd.DataFrame, max_temas: int = 8) -> Any:
+    plt = get_plt()
+    if df_anpp is None or df_anpp.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title("Tempo de tramitacao por tema (boxplot)")
+        ax.text(0.5, 0.5, "Sem dados suficientes.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    df_base = df_anpp.copy()
+    if "assunto_lider" not in df_base.columns:
+        if "assuntos" in df_base.columns:
+            def _extract_assunto(val):
+                if isinstance(val, list) and len(val) > 0:
+                    first = val[0]
+                    if isinstance(first, dict) and "nome" in first:
+                        return str(first["nome"])
+                elif isinstance(val, str) and val.strip():
+                    return val.strip()
+                return "Tema Geral"
+            df_base["assunto_lider"] = df_base["assuntos"].apply(_extract_assunto)
+        else:
+            df_base["assunto_lider"] = "Tema Unico"
+
+    base = df_base[["assunto_lider", "data_ajuizamento", "ultima_atualizacao"]].dropna()
+    if base.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title("Tempo de tramitacao por tema (boxplot)")
+        ax.text(0.5, 0.5, "Sem dados suficientes.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    aju = base["data_ajuizamento"]
+    atu = base["ultima_atualizacao"]
+    if getattr(aju.dt, "tz", None) is not None:
+        aju = aju.dt.tz_convert("UTC").dt.tz_localize(None)
+    if getattr(atu.dt, "tz", None) is not None:
+        atu = atu.dt.tz_convert("UTC").dt.tz_localize(None)
+
+    base = base.assign(dias=(atu - aju).dt.total_seconds() / 86400.0)
+    base = base[(base["dias"] >= 0) & (base["dias"].notna())]
+    if base.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title("Tempo de tramitacao por tema (boxplot)")
+        ax.text(0.5, 0.5, "Sem dados validos de tempo.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    limite = base["dias"].quantile(0.99)
+    if limite > 0:
+        base = base[base["dias"] <= limite]
+
+    top_temas = (
+        base["assunto_lider"].value_counts().head(max_temas).index.tolist()
+    )
+    base = base[base["assunto_lider"].isin(top_temas)]
+    if base.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title("Tempo de tramitacao por tema (boxplot)")
+        ax.text(0.5, 0.5, "Sem dados para os temas.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    grupos = []
+    labels = []
+    for tema in top_temas:
+        valores = base.loc[base["assunto_lider"] == tema, "dias"].values
+        if len(valores) > 0:
+            grupos.append(valores)
+            labels.append(str(tema) if len(str(tema)) <= 30 else str(tema)[:30] + "...")
+
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    bp = ax.boxplot(grupos, patch_artist=True, showfliers=False)
+    for box in bp["boxes"]:
+        box.set_facecolor("#0F2C59")
+        box.set_alpha(0.88)
+        box.set_edgecolor("#D4AF37")
+        box.set_linewidth(1.5)
+
+    for median in bp["medians"]:
+        median.set_color("#F59E0B")
+        median.set_linewidth(2.2)
+
+    for whisker in bp["whiskers"]:
+        whisker.set_color("#0F2C59")
+        whisker.set_linewidth(1.2)
+
+    for cap in bp["caps"]:
+        cap.set_color("#0F2C59")
+        cap.set_linewidth(1.2)
+
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("Duracao (dias)", fontsize=10, fontweight="bold", color="#0F2C59")
+    ax.set_title("Tempo de tramitacao por Tema / Assunto (Boxplot em Dias)", fontsize=12, fontweight="bold", color="#0F2C59", pad=12)
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 def fig_tempo_tramitacao_boxplot(df_anpp: pd.DataFrame, max_orgaos: int = 8) -> Any:
     plt = get_plt()
     base = df_anpp[["orgao_julgador", "data_ajuizamento", "ultima_atualizacao"]].dropna()
@@ -6055,11 +6238,26 @@ def fig_tempo_tramitacao_boxplot(df_anpp: pd.DataFrame, max_orgaos: int = 8) -> 
     fig, ax = plt.subplots(figsize=(11, 4.8))
     bp = ax.boxplot(grupos, patch_artist=True, showfliers=False)
     for box in bp["boxes"]:
-        box.set_facecolor("#A0CBE8")
-        box.set_alpha(0.9)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_ylabel("Dias")
-    ax.set_title("Tempo entre ajuizamento e ultima atualizacao (Top orgaos)")
+        box.set_facecolor("#1E3A8A")
+        box.set_alpha(0.85)
+        box.set_edgecolor("#D4AF37")
+        box.set_linewidth(1.5)
+
+    for median in bp["medians"]:
+        median.set_color("#F59E0B")
+        median.set_linewidth(2.2)
+
+    for whisker in bp["whiskers"]:
+        whisker.set_color("#1E3A8A")
+        whisker.set_linewidth(1.2)
+
+    for cap in bp["caps"]:
+        cap.set_color("#1E3A8A")
+        cap.set_linewidth(1.2)
+
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("Dias", fontsize=10, fontweight="bold", color="#0F2C59")
+    ax.set_title("Tempo entre ajuizamento e ultima atualizacao por Orgao Julgador (dias)", fontsize=12, fontweight="bold", color="#0F2C59", pad=12)
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     fig.tight_layout()
     return fig
@@ -6443,35 +6641,37 @@ def save_outputs(
 
 
 def render() -> None:
-    st.set_page_config(page_title="DataJud | Jurimetria processual", layout="wide")
+    st.set_page_config(page_title="Tenho Direito | Jurimetria DataJud", layout="wide")
     st.markdown(
         """
         <style>
         :root {
-            --bg-main: #f4efe6;
-            --bg-panel: rgba(255, 250, 243, 0.94);
-            --bg-panel-solid: #fffaf3;
-            --ink: #1d1b18;
-            --muted: #6f665b;
-            --line: rgba(39, 31, 24, 0.13);
-            --accent: #a45231;
-            --accent-2: #215347;
-            --accent-soft: rgba(164, 82, 49, 0.12);
-            --shadow: 0 18px 48px rgba(48, 31, 20, 0.09);
-            --radius: 8px;
+            --bg-main: #f0f4f8;
+            --bg-panel: #ffffff;
+            --bg-panel-solid: #ffffff;
+            --ink: #0d1b2a;
+            --muted: #475569;
+            --line: rgba(15, 44, 89, 0.14);
+            --accent: #0f2c59;
+            --accent-2: #1e3a8a;
+            --accent-gold: #d4af37;
+            --accent-amber: #f59e0b;
+            --accent-soft: rgba(15, 44, 89, 0.08);
+            --shadow: 0 10px 30px rgba(15, 44, 89, 0.08);
+            --radius: 10px;
         }
         .stApp {
             color: var(--ink);
             background:
-                radial-gradient(circle at 7% 5%, rgba(164, 82, 49, 0.16), transparent 27rem),
-                radial-gradient(circle at 88% 2%, rgba(33, 83, 71, 0.13), transparent 26rem),
-                linear-gradient(135deg, #f4efe6 0%, #faf2e7 48%, #eadfce 100%);
+                radial-gradient(circle at 10% 5%, rgba(15, 44, 89, 0.06), transparent 30rem),
+                radial-gradient(circle at 90% 2%, rgba(212, 175, 55, 0.07), transparent 28rem),
+                linear-gradient(135deg, #f0f4f8 0%, #f8fafc 50%, #e2e8f0 100%);
         }
         [data-testid="stAppViewContainer"] {
             background: transparent;
         }
         [data-testid="stHeader"] {
-            background: rgba(244, 239, 230, 0.72);
+            background: rgba(15, 44, 89, 0.95);
             backdrop-filter: blur(12px);
         }
         .main .block-container {
@@ -6480,9 +6680,8 @@ def render() -> None:
             padding-bottom: 3rem;
         }
         [data-testid="stSidebar"] {
-            background:
-                linear-gradient(180deg, rgba(28, 25, 21, 0.98) 0%, rgba(42, 35, 29, 0.98) 55%, rgba(50, 40, 30, 0.98) 100%);
-            border-right: 1px solid rgba(255, 250, 243, 0.1);
+            background: linear-gradient(180deg, #0f2c59 0%, #0d1b2a 60%, #08121e 100%);
+            border-right: 1px solid rgba(212, 175, 55, 0.25);
         }
         [data-testid="stSidebar"] > div:first-child {
             padding-top: 1.15rem;
@@ -6494,19 +6693,27 @@ def render() -> None:
         [data-testid="stSidebar"] p,
         [data-testid="stSidebar"] span,
         [data-testid="stSidebar"] small {
-            color: rgba(255, 250, 243, 0.9);
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+        [data-testid="stSidebar"] [data-testid="stRadio"] label p,
+        [data-testid="stSidebar"] label p {
+            color: #ffffff !important;
+            font-weight: 600 !important;
         }
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong {
-            color: #fffaf3;
+            color: #ffffff;
             letter-spacing: 0.01em;
         }
         [data-testid="stSidebar"] hr {
-            border-color: rgba(255, 250, 243, 0.12);
+            border-color: rgba(212, 175, 55, 0.25);
             margin: 1rem 0;
         }
         [data-testid="stSidebar"] [data-testid="stAlert"] {
             border-radius: var(--radius);
-            border: 1px solid rgba(255, 250, 243, 0.14);
+            border: 1px solid rgba(212, 175, 55, 0.3);
+            background: rgba(15, 44, 89, 0.5);
+            color: #ffffff;
         }
         div[data-baseweb="input"] input,
         div[data-baseweb="select"] > div,
@@ -6515,44 +6722,44 @@ def render() -> None:
         }
         [data-testid="stSidebar"] div[data-baseweb="input"] input,
         [data-testid="stSidebar"] div[data-baseweb="select"] > div {
-            background: rgba(255, 250, 243, 0.96);
+            background: #ffffff;
             color: var(--ink);
-            border-color: rgba(255, 250, 243, 0.18);
+            border-color: #d4af37;
         }
         [data-testid="stSidebar"] div[data-baseweb="input"] input::placeholder {
-            color: rgba(29, 27, 24, 0.48);
+            color: rgba(13, 27, 42, 0.5);
         }
         [data-testid="stSidebar"] [data-testid="stExpander"] {
-            border: 1px solid rgba(255, 250, 243, 0.12);
+            border: 1px solid rgba(212, 175, 55, 0.25);
             border-radius: var(--radius);
-            background: rgba(255, 250, 243, 0.045);
+            background: rgba(255, 255, 255, 0.05);
         }
         [data-testid="stSidebar"] .stButton > button {
             border-radius: var(--radius);
-            border: 1px solid rgba(255, 250, 243, 0.28);
-            background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            color: #fffaf3 !important;
+            border: 1px solid #d4af37;
+            background: linear-gradient(135deg, #0f2c59, #1e3a8a);
+            color: #ffffff !important;
             font-weight: 700;
-            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+            box-shadow: 0 4px 14px rgba(15, 44, 89, 0.35);
         }
         [data-testid="stSidebar"] .stButton > button * {
-            color: #fffaf3 !important;
+            color: #ffffff !important;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
-            border-color: rgba(255, 250, 243, 0.72);
-            background: linear-gradient(135deg, #bf6240, #2c6a5e);
-            color: #fffaf3 !important;
+            border-color: #f59e0b;
+            background: linear-gradient(135deg, #1e3a8a, #d4af37);
+            color: #ffffff !important;
         }
         .author-card {
             margin: 0.8rem 0 1rem;
             padding: 0.9rem;
-            border: 1px solid rgba(255, 250, 243, 0.16);
+            border: 1px solid rgba(212, 175, 55, 0.3);
             border-radius: var(--radius);
-            background: rgba(255, 250, 243, 0.07);
-            box-shadow: inset 0 1px 0 rgba(255, 250, 243, 0.08);
+            background: rgba(15, 44, 89, 0.6);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
         }
         .author-kicker {
-            color: #d6b99f;
+            color: #d4af37;
             font-size: 0.72rem;
             font-weight: 800;
             letter-spacing: 0.09em;
@@ -6561,14 +6768,14 @@ def render() -> None:
         }
         .author-card strong {
             display: block;
-            color: #fffaf3;
+            color: #ffffff;
             font-size: 1rem;
             line-height: 1.25;
             margin-bottom: 0.2rem;
         }
         .author-card small {
             display: block;
-            color: rgba(255, 250, 243, 0.72);
+            color: rgba(248, 250, 252, 0.8);
             line-height: 1.35;
             margin-bottom: 0.65rem;
         }
@@ -6581,17 +6788,18 @@ def render() -> None:
             display: inline-flex;
             align-items: center;
             padding: 0.24rem 0.5rem;
-            border: 1px solid rgba(255, 250, 243, 0.2);
+            border: 1px solid rgba(212, 175, 55, 0.4);
             border-radius: 999px;
-            color: #fffaf3 !important;
-            background: rgba(255, 250, 243, 0.08);
+            color: #ffffff !important;
+            background: rgba(15, 44, 89, 0.7);
             font-size: 0.78rem;
             font-weight: 700;
             text-decoration: none;
         }
         .author-links a:hover {
-            background: rgba(255, 250, 243, 0.16);
-            border-color: rgba(255, 250, 243, 0.45);
+            background: #d4af37;
+            border-color: #f59e0b;
+            color: #0f2c59 !important;
             text-decoration: none;
         }
         h1, h2, h3 {
@@ -6603,35 +6811,35 @@ def render() -> None:
         }
         .stTabs [data-baseweb="tab-list"] {
             gap: 0.35rem;
-            border-bottom: 1px solid var(--line);
+            border-bottom: 2px solid #0f2c59;
         }
         .stTabs [data-baseweb="tab"] {
             border-radius: var(--radius) var(--radius) 0 0;
             color: var(--muted);
-            background: rgba(255, 250, 243, 0.56);
+            background: #e2e8f0;
+            font-weight: 600;
         }
         .stTabs [aria-selected="true"] {
-            color: var(--ink);
-            background: var(--bg-panel-solid);
+            color: #ffffff;
+            background: #0f2c59;
+            font-weight: 700;
         }
         .app-header {
             position: relative;
             overflow: hidden;
-            margin: 0.1rem 0 1rem 0;
-            padding: 1.15rem 1.25rem;
-            border: 1px solid var(--line);
+            margin: 0.1rem 0 1.2rem 0;
+            padding: 1.35rem 1.5rem;
+            border: 1px solid rgba(212, 175, 55, 0.3);
             border-radius: var(--radius);
-            background:
-                linear-gradient(135deg, rgba(255, 250, 243, 0.96), rgba(249, 236, 220, 0.88)),
-                radial-gradient(circle at 100% 0%, rgba(33, 83, 71, 0.18), transparent 17rem);
-            box-shadow: var(--shadow);
+            background: linear-gradient(135deg, #0f2c59 0%, #1e3a8a 60%, #0d1b2a 100%);
+            box-shadow: 0 12px 36px rgba(15, 44, 89, 0.25);
         }
         .app-header::after {
             content: "";
             position: absolute;
             inset: auto 0 0 0;
             height: 4px;
-            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            background: linear-gradient(90deg, #d4af37, #f59e0b, #3b82f6);
         }
         .app-header-inner {
             position: relative;
@@ -6642,81 +6850,125 @@ def render() -> None:
             gap: 1rem;
         }
         .app-kicker {
-            color: var(--accent-2);
-            font-size: 0.76rem;
-            font-weight: 700;
+            color: #ffd700 !important;
+            font-size: 0.85rem;
+            font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 0.28rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 0.3rem;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
         }
         .app-header h1 {
             margin: 0;
-            color: var(--ink);
-            font-size: clamp(2rem, 4vw, 3.45rem);
+            color: #ffffff !important;
+            font-size: clamp(2.2rem, 4vw, 3.5rem);
+            font-weight: 800;
             line-height: 1.08;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
         }
         .app-header p {
-            max-width: 46rem;
+            max-width: 48rem;
             margin: 0.55rem 0 0;
-            color: var(--muted);
-            font-size: 1rem;
+            color: #f1f5f9 !important;
+            font-size: 1.05rem;
+            font-weight: 500;
             line-height: 1.5;
+            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
         }
-        .mode-strip {
+        .author-top-card {
+            background: rgba(15, 44, 89, 0.7);
+            border: 1px solid rgba(212, 175, 55, 0.4);
+            border-radius: var(--radius);
+            padding: 0.85rem 1.1rem;
+            min-width: 240px;
+            max-width: 320px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        }
+        .author-top-kicker {
+            color: #ffd700;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.2rem;
+        }
+        .author-top-name {
+            color: #ffffff;
+            font-size: 1rem;
+            font-weight: 800;
+            margin-bottom: 0.15rem;
+        }
+        .author-top-sub {
+            color: #cbd5e1;
+            font-size: 0.76rem;
+            margin-bottom: 0.55rem;
+            line-height: 1.25;
+        }
+        .author-top-links {
             display: flex;
             flex-wrap: wrap;
-            justify-content: flex-end;
-            gap: 0.45rem;
-            max-width: 23rem;
-            padding-top: 0.2rem;
+            gap: 0.35rem;
         }
-        .mode-strip span {
+        .author-top-links a {
             display: inline-flex;
             align-items: center;
-            min-height: 2rem;
-            padding: 0.28rem 0.68rem;
+            padding: 0.2rem 0.55rem;
+            border: 1px solid rgba(212, 175, 55, 0.4);
             border-radius: 999px;
-            border: 1px solid var(--line);
-            background: rgba(255, 250, 243, 0.74);
-            color: var(--ink);
-            font-size: 0.82rem;
+            color: #ffffff !important;
+            background: rgba(15, 44, 89, 0.8);
+            font-size: 0.75rem;
             font-weight: 700;
-            white-space: nowrap;
+            text-decoration: none;
+        }
+        .author-top-links a:hover {
+            background: #d4af37;
+            color: #0f2c59 !important;
+            border-color: #f59e0b;
+            text-decoration: none;
         }
         .empty-state {
-            border: 1px dashed rgba(164, 82, 49, 0.34);
+            border: 1px dashed rgba(212, 175, 55, 0.5);
             border-radius: var(--radius);
             padding: 1.1rem 1.2rem;
             color: var(--muted);
-            background: rgba(255, 250, 243, 0.72);
-            box-shadow: 0 12px 32px rgba(48, 31, 20, 0.06);
+            background: #ffffff;
+            box-shadow: 0 8px 24px rgba(15, 44, 89, 0.06);
         }
         .empty-state strong {
             display: block;
-            color: var(--ink);
+            color: #0f2c59;
             margin-bottom: 0.25rem;
         }
         .theme-metric-card,
         div[data-testid="stMetric"] {
-            min-height: 5.9rem;
-            padding: 0.72rem 0.78rem;
-            border: 1px solid var(--line);
+            min-height: 6rem;
+            padding: 0.85rem 1rem;
+            border: 1px solid rgba(212, 175, 55, 0.3);
             border-radius: var(--radius);
-            background: var(--bg-panel);
-            box-shadow: 0 9px 26px rgba(48, 31, 20, 0.05);
+            background: #ffffff;
+            box-shadow: 0 8px 24px rgba(15, 44, 89, 0.06);
+            border-top: 3px solid #0f2c59;
+            transition: all 0.2s ease-in-out;
+        }
+        div[data-testid="stMetric"]:hover {
+            border-top-color: #d4af37;
+            box-shadow: 0 12px 28px rgba(15, 44, 89, 0.12);
         }
         .theme-metric-label {
             font-size: 0.82rem;
-            font-weight: 600;
+            font-weight: 700;
             line-height: 1.25;
-            color: var(--muted);
+            color: #0f2c59;
             margin-bottom: 0.28rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
         }
         .theme-metric-value {
             font-size: clamp(1.35rem, 1.55vw, 2.15rem);
-            font-weight: 700;
+            font-weight: 800;
             line-height: 1.02;
-            color: var(--ink);
+            color: #0d1b2a;
             white-space: normal;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -6724,23 +6976,27 @@ def render() -> None:
         .theme-metric-delta {
             display: inline-block;
             margin-top: 0.42rem;
-            padding: 0.12rem 0.44rem;
+            padding: 0.15rem 0.5rem;
             border-radius: 999px;
-            background: rgba(33, 83, 71, 0.1);
-            color: var(--accent-2);
+            background: rgba(212, 175, 55, 0.15);
+            color: #0f2c59;
             font-size: 0.78rem;
             line-height: 1.1;
-            font-weight: 600;
+            font-weight: 700;
             white-space: normal;
+            border: 1px solid rgba(212, 175, 55, 0.3);
         }
         div[data-testid="stMetric"] label[data-testid="stMetricLabel"] p {
-            font-size: 0.82rem;
+            font-size: 0.84rem;
             line-height: 1.2;
+            font-weight: 700;
+            color: #0f2c59;
         }
         div[data-testid="stMetricValue"] > div {
             font-size: clamp(1.25rem, 1.5vw, 2rem);
             line-height: 1.06;
-            color: var(--ink);
+            color: #0d1b2a;
+            font-weight: 800;
             white-space: normal;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -6749,13 +7005,14 @@ def render() -> None:
             font-size: 0.78rem;
             line-height: 1.15;
             white-space: normal;
+            color: #d4af37;
         }
         [data-testid="stDataFrame"],
         [data-testid="stTable"] {
             border-radius: var(--radius);
             overflow: hidden;
-            border: 1px solid var(--line);
-            box-shadow: 0 13px 36px rgba(48, 31, 20, 0.05);
+            border: 1px solid rgba(15, 44, 89, 0.15);
+            box-shadow: 0 10px 30px rgba(15, 44, 89, 0.06);
         }
         [data-testid="stAlert"] {
             border-radius: var(--radius);
@@ -6774,20 +7031,25 @@ def render() -> None:
         unsafe_allow_html=True,
     )
     st.markdown(
-        """
+        f"""
         <div class="app-header">
             <div class="app-header-inner">
                 <div>
-                    <div class="app-kicker">DataJud CNJ</div>
-                    <h1>Jurimetria processual</h1>
-                    <p>Pesquise processos por classe, tema, numero, parte, CPF/CNPJ ou palavras-chave e transforme o retorno publico em indicadores para jurimetria.</p>
+                    <div class="app-kicker">⚖️ PORTAL TENHO DIREITO • JURIMETRIA DATAJUD</div>
+                    <h1>Jurimetria Processual</h1>
+                    <p>Pesquise e analise dados públicos do DataJud: tempos de tramitação (média, mediana, mínimo e máximo), desfechos, valores de causa e comparações por temas e tribunais.</p>
                 </div>
-                <div class="mode-strip">
-                    <span>Classe</span>
-                    <span>Tema</span>
-                    <span>Processo</span>
-                    <span>Parte</span>
-                    <span>Palavra-chave</span>
+                <div class="author-top-card">
+                    <div class="author-top-kicker">SOBRE O PROJETO</div>
+                    <div class="author-top-name">Criado por Lucas Martins</div>
+                    <div class="author-top-sub">Bibliotecário e Advogado | CRB6-3621 | OAB/MG 243736</div>
+                    <div class="author-top-links">
+                        <a href="https://github.com/lucaslmfbib" target="_blank">GitHub</a>
+                        <a href="https://www.linkedin.com/in/lucaslmf/" target="_blank">LinkedIn</a>
+                        <a href="https://www.instagram.com/lucaslmf_/" target="_blank">Instagram</a>
+                        <a href="{CNJ_SIGLAS_URL}" target="_blank">Tribunais</a>
+                        <a href="{CNJ_CLASSES_URL}" target="_blank">Classes CNJ</a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -6797,53 +7059,8 @@ def render() -> None:
     api_key = resolve_api_key()
 
     with st.sidebar:
-        st.header("Busca")
-        if api_key:
-            st.caption("Chave DataJud ativa.")
-        else:
-            st.warning("Chave DataJud ausente.")
-            with st.expander("Configurar chave", expanded=False):
-                st.caption("Configure DATAJUD_API_KEY em Streamlit Secrets ou como variavel de ambiente local.")
-                st.markdown(
-                    "[Onde obter API Key](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
-                )
-        st.markdown(
-            f"""
-            <div class="author-card">
-                <div class="author-kicker">Sobre o projeto</div>
-                <strong>Criado por Lucas Martins</strong>
-                <small>Bibliotecario e Advogado | CRB6-3621 | OAB/MG 243736</small>
-                <div class="author-links">
-                    <a href="https://github.com/lucaslmfbib" target="_blank">GitHub</a>
-                    <a href="https://www.linkedin.com/in/lucaslmf/" target="_blank">LinkedIn</a>
-                    <a href="https://www.instagram.com/lucaslmf_/" target="_blank">Instagram</a>
-                    <a href="{CNJ_SIGLAS_URL}" target="_blank">Tribunais</a>
-                    <a href="{CNJ_CLASSES_URL}" target="_blank">Classes CNJ</a>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.divider()
-        st.markdown("**Tribunal**")
-        tribunal_sigla = st.text_input(
-            "Tribunal (sigla CNJ)",
-            value="tjmg",
-            help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
-        )
-        estrutura_info = get_estrutura_options(tribunal_sigla)
-        estrutura_filtro = st.selectbox(
-            "Recorte estrutural (opcional)",
-            options=estrutura_info["opcoes"],
-            index=0,
-            format_func=format_estrutura_option,
-            help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
-        )
-        with st.expander("Detalhe do recorte", expanded=False):
-            st.caption(describe_estrutura_option(estrutura_filtro))
-            st.caption(str(estrutura_info["observacao"]))
-        st.divider()
-        st.markdown("**Pesquisa**")
+        # 1. PESQUISA (PRIMEIRA SEÇÃO DA BARRA LATERAL)
+        st.markdown("**1. Pesquisa**")
         modo_busca_sidebar = st.radio(
             "Modo de busca",
             options=["classe", "tema", "processo", "parte", "livre"],
@@ -6851,9 +7068,20 @@ def render() -> None:
             help="Escolha como voce quer montar a consulta.",
         )
 
+        tribunal_sigla_pre = str(st.session_state.get("tribunal_sigla_sidebar", "tjmg") or "tjmg").strip().lower()
+        estrutura_filtro_pre = str(st.session_state.get("estrutura_filtro_sidebar", "Todos") or "Todos").strip()
+
         if "classe_codigo_sidebar" not in st.session_state:
             st.session_state["classe_codigo_sidebar"] = 12729
         classe_codigo = int(st.session_state.get("classe_codigo_sidebar", 12729) or 12729)
+
+        numero_processo = ""
+        nome_parte = ""
+        cpf_cnpj = ""
+        texto_livre = ""
+        tema_consulta = ""
+
+        # CAMPOS DINÂMICOS CONFORME O MODO SELECIONADO (LOGO ABAIXO DO RADIO DE MODO DE BUSCA)
         if modo_busca_sidebar == "classe":
             classe_codigo = int(
                 st.number_input(
@@ -6865,13 +7093,9 @@ def render() -> None:
                 )
             )
             with st.expander("Codigos sugeridos", expanded=False):
-                render_codigo_sugestoes(tribunal_sigla)
+                render_codigo_sugestoes(tribunal_sigla_pre)
 
-        numero_processo = ""
-        nome_parte = ""
-        cpf_cnpj = ""
-        texto_livre = ""
-        if modo_busca_sidebar == "processo":
+        elif modo_busca_sidebar == "processo":
             numero_processo = st.text_input(
                 "Numero do processo",
                 key="numero_processo_sidebar",
@@ -6879,6 +7103,7 @@ def render() -> None:
                 help="Consulta o caso exato.",
             )
 
+        # PERÍODO DE AJUIZAMENTO (APLICÁVEL SE NÃO FOR NÚMERO DE PROCESSO)
         aplicar_periodo = False
         data_inicio = None
         data_fim = None
@@ -6905,11 +7130,13 @@ def render() -> None:
             periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
             if periodo_legivel:
                 st.caption(f"Periodo aplicado: {periodo_legivel}")
+
         usar_numero_processo_sidebar = modo_busca_sidebar == "processo"
+
         tema_cache_key = build_theme_suggestion_cache_key(
-            tribunal_sigla=tribunal_sigla,
+            tribunal_sigla=tribunal_sigla_pre,
             classe_codigo=classe_codigo,
-            estrutura_filtro=estrutura_filtro,
+            estrutura_filtro=estrutura_filtro_pre,
             data_inicio=data_inicio if aplicar_periodo else None,
             data_fim=data_fim if aplicar_periodo else None,
         )
@@ -6949,6 +7176,7 @@ def render() -> None:
         )
         tema_consulta = tema_atual_sidebar if modo_busca_sidebar in {"classe", "tema"} else ""
         busca_tema_direto_sidebar = modo_busca_sidebar == "tema"
+
         if usar_numero_processo_sidebar:
             pass
         elif modo_busca_sidebar == "tema":
@@ -6974,7 +7202,7 @@ def render() -> None:
                     "CPF/CNPJ (opcional, melhor com nome)",
                     key="cpf_cnpj_sidebar",
                     placeholder="Ex.: 12345678900",
-                    help="Tenta conferir documento quando o tribunal expoe esse dado. Para localizar melhor, informe tambem o nome ou razao social.",
+                    help="Tenta conferir documento quando o tribunal expoe esse dado.",
                 )
             )
             texto_livre = normalize_free_text_query(
@@ -6989,10 +7217,6 @@ def render() -> None:
                 st.caption(
                     "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe e indexa no endpoint publico."
                 )
-            st.info(
-                "Limite do DataJud publico: nome, parte e CPF/CNPJ nao sao campos garantidos no glossario oficial. "
-                "Quando o tribunal nao indexa esses dados, a consulta pode voltar vazia mesmo existindo processo."
-            )
         elif modo_busca_sidebar == "livre":
             texto_livre = normalize_free_text_query(
                 st.text_input(
@@ -7027,8 +7251,8 @@ def render() -> None:
                 temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
                 if current_query_can_seed_theme_suggestions(
                     classe_codigo=classe_codigo,
-                    tribunal_sigla=tribunal_sigla,
-                    estrutura_filtro=estrutura_filtro,
+                    tribunal_sigla=tribunal_sigla_pre,
+                    estrutura_filtro=estrutura_filtro_pre,
                     data_inicio=data_inicio if aplicar_periodo else None,
                     data_fim=data_fim if aplicar_periodo else None,
                 ):
@@ -7044,9 +7268,9 @@ def render() -> None:
                         tema_sugestoes_df = fetch_theme_suggestions_dataframe(
                             api_key=api_key,
                             classe_codigo=int(classe_codigo),
-                            url=build_url(tribunal_sigla),
-                            tribunal_sigla=tribunal_sigla,
-                            estrutura_filtro=estrutura_filtro,
+                            url=build_url(tribunal_sigla_pre),
+                            tribunal_sigla=tribunal_sigla_pre,
+                            estrutura_filtro=estrutura_filtro_pre,
                             data_inicio=data_inicio if aplicar_periodo else None,
                             data_fim=data_fim if aplicar_periodo else None,
                         )
@@ -7112,8 +7336,35 @@ def render() -> None:
                     st.caption(
                         f"{format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
                     )
+
         st.divider()
-        st.markdown("**Execucao**")
+
+        # 2. TRIBUNAL & ESTRUTURA (AGORA LOGO ABAIXO DA PESQUISA)
+        st.markdown("**2. Tribunal & Estrutura**")
+        tribunal_sigla = st.text_input(
+            "Tribunal (sigla CNJ)",
+            value="tjmg",
+            key="tribunal_sigla_sidebar",
+            help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
+        ).strip().lower()
+
+        estrutura_info = get_estrutura_options(tribunal_sigla)
+        estrutura_filtro = st.selectbox(
+            "Recorte estrutural (opcional)",
+            options=estrutura_info["opcoes"],
+            index=0,
+            key="estrutura_filtro_sidebar",
+            format_func=format_estrutura_option,
+            help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
+        )
+        with st.expander("Detalhe do recorte", expanded=False):
+            st.caption(describe_estrutura_option(estrutura_filtro))
+            st.caption(str(estrutura_info["observacao"]))
+
+        st.divider()
+
+        # 3. EXECUÇÃO
+        st.markdown("**3. Execucao**")
         size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
         auto_url = build_url(tribunal_sigla)
         url = auto_url
@@ -7140,6 +7391,28 @@ def render() -> None:
                 "Isso pode deixar a resposta mais lenta."
             )
         executar = st.button("Buscar no DataJud", use_container_width=True)
+        if size > 2000:
+            st.warning("Consultas acima de 2000 podem ficar lentas.")
+
+        st.divider()
+
+        # 4. CONFIGURAÇÃO DA API KEY (RODAPÉ DA SIDEBAR / DISCRETO)
+        with st.expander("⚙️ Configuração da API Key DataJud", expanded=False):
+            st.caption("✅ **Chave DataJud Padrão Ativa** (pronta para uso)")
+            user_key_input = st.text_input(
+                "API Key personalizada:",
+                type="password",
+                value=st.session_state.get("custom_api_key", ""),
+                help="Deixe em branco para usar a chave padrão pré-configurada no sistema.",
+                key="input_api_key_ui"
+            )
+            if user_key_input.strip():
+                st.session_state["custom_api_key"] = user_key_input.strip()
+                api_key = resolve_api_key()
+
+            st.markdown(
+                "[📖 Como obter nova API Key no CNJ](https://datajud-wiki.cnj.jus.br/api-publica/acesso/)"
+            )
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
 
@@ -7679,7 +7952,8 @@ def render() -> None:
             f"Orgao julgador: `{shorten_display_label(process_context_record.get('orgao_julgador', ''), max_chars=70) or 'Nao informado'}`"
         )
     else:
-        st.subheader("Resumo")
+        st.subheader("Resumo Geral da Amostra")
+        stats_tempo_geral = calcular_estatisticas_tempo_tramitacao(df_anpp)
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Registros", f"{len(df_anpp):,}".replace(",", "."))
         c2.metric("Temas diferentes", str(total_assuntos))
@@ -7692,6 +7966,30 @@ def render() -> None:
             )
         else:
             c4.metric("Valor da causa", "Sem base")
+
+        if stats_tempo_geral["total_validos"] > 0:
+            st.markdown("**⏱️ Tempo de Finalizacao / Tramitacao dos Processos (Visao Geral)**")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric(
+                "Tempo Medio",
+                stats_tempo_geral["tempo_medio_str"],
+                delta=f"Base: {stats_tempo_geral['total_validos']} processos",
+            )
+            t2.metric(
+                "Mediana",
+                stats_tempo_geral["mediana_str"],
+                delta="50% da amostra",
+            )
+            t3.metric(
+                "Tempo Minimo",
+                stats_tempo_geral["minimo_str"],
+                delta="Registro mais rapido",
+            )
+            t4.metric(
+                "Tempo Maximo",
+                stats_tempo_geral["maximo_str"],
+                delta="Registro mais longo",
+            )
 
     if query_summary_items:
         with st.expander("Resumo da busca", expanded=False):
@@ -9626,6 +9924,44 @@ def render() -> None:
                 + (f" ({classe_scope_nome})" if classe_scope_nome else "")
                 + "."
             )
+
+        st.subheader("⏱️ Tempo para Finalizacao / Tramitacao dos Processos")
+        st.caption(
+            "Analise do tempo decorrido entre o ajuizamento e o ultimo andamento/atualizacao registrado na base DataJud."
+        )
+        stats_tempo_tab = calcular_estatisticas_tempo_tramitacao(df_stats_base)
+        if stats_tempo_tab["total_validos"] > 0:
+            tm1, tm2, tm3, tm4 = st.columns(4)
+            tm1.metric(
+                "Tempo Medio",
+                stats_tempo_tab["tempo_medio_str"],
+                delta=f"Base: {stats_tempo_tab['total_validos']} processos",
+            )
+            tm2.metric(
+                "Mediana",
+                stats_tempo_tab["mediana_str"],
+                delta="50% da amostra",
+            )
+            tm3.metric(
+                "Tempo Minimo",
+                stats_tempo_tab["minimo_str"],
+                delta="Registro mais rapido",
+            )
+            tm4.metric(
+                "Tempo Maximo",
+                stats_tempo_tab["maximo_str"],
+                delta="Registro mais longo",
+            )
+
+            st.markdown("**Boxplots Comparativos de Tempo de Tramitacao (em Dias)**")
+            bp_col1, bp_col2 = st.columns(2)
+            with bp_col1:
+                st.pyplot(fig_tempo_tramitacao_por_tema_boxplot(df_stats_base), clear_figure=True)
+            with bp_col2:
+                st.pyplot(fig_tempo_tramitacao_boxplot(df_stats_base), clear_figure=True)
+        else:
+            st.info("Nao ha registros com datas validas suficientes para calcular o tempo nesta amostra.")
+
         col_a, col_b = st.columns(2)
         with col_a:
             st.subheader("Horario")
