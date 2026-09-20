@@ -536,89 +536,89 @@ def get_codigo_sugestoes(tribunal_sigla: str) -> dict[str, Any]:
     tribunal = normalize_tribunal_sigla(tribunal_sigla)
     if tribunal in {"tjmmg", "tjmrs", "tjmsp"}:
         return {
-            "categoria": "Tribunal de Justica Militar",
-            "titulo": f"Sugestoes para {tribunal or 'tjm'}",
+            "categoria": "Justiça Militar Estadual",
+            "titulo": f"Sugestões para {tribunal.upper()}",
             "codigos": CODIGOS_TJM,
-            "observacao": "Base inicial util para TJMMG, TJMRS e TJMSP.",
+            "observacao": "Classes frequentes em Tribunais de Justiça Militar.",
             "endpoint_publico": True,
         }
     if tribunal.startswith("trt"):
         return {
-            "categoria": "Tribunal Regional do Trabalho",
-            "titulo": f"Sugestoes para {tribunal or 'trt'}",
+            "categoria": "Justiça do Trabalho (TRT)",
+            "titulo": f"Sugestões para {tribunal.upper()}",
             "codigos": CODIGOS_TRT,
-            "observacao": "Base inicial util para TRT1 ate TRT24.",
+            "observacao": "Classes de 1º e 2º grau da Justiça do Trabalho.",
             "endpoint_publico": True,
         }
     if tribunal.startswith("trf"):
         return {
-            "categoria": "Tribunal Regional Federal",
-            "titulo": f"Sugestoes para {tribunal or 'trf'}",
+            "categoria": "Justiça Federal (TRF)",
+            "titulo": f"Sugestões para {tribunal.upper()}",
             "codigos": CODIGOS_TRF,
-            "observacao": "Base inicial util para TRF1 ate TRF6.",
+            "observacao": "Classes comuns da Justiça Federal (1º e 2º Grau).",
             "endpoint_publico": True,
         }
     if tribunal in {"stj"}:
         return {
-            "categoria": "Tribunal Superior",
-            "titulo": "Sugestoes para STJ",
+            "categoria": "Superior Tribunal de Justiça (STJ)",
+            "titulo": "Sugestões para o STJ",
             "codigos": CODIGOS_STJ,
-            "observacao": "Use classes recursais e originarias do STJ.",
+            "observacao": "Classes recursais e originárias do STJ.",
             "endpoint_publico": True,
         }
     if tribunal in {"tst"}:
         return {
-            "categoria": "Tribunal Superior",
-            "titulo": "Sugestoes para TST",
+            "categoria": "Tribunal Superior do Trabalho (TST)",
+            "titulo": "Sugestões para o TST",
             "codigos": CODIGOS_TST,
-            "observacao": "Base inicial util para consultas no TST.",
+            "observacao": "Classes recursais e originárias do TST.",
             "endpoint_publico": True,
         }
     if tribunal in {"tse"}:
         return {
-            "categoria": "Tribunal Superior",
-            "titulo": "Sugestoes para TSE",
+            "categoria": "Tribunal Superior Eleitoral (TSE)",
+            "titulo": "Sugestões para o TSE",
             "codigos": CODIGOS_TSE,
-            "observacao": "Base inicial util para processos civeis-eleitorais e recursos.",
+            "observacao": "Processos eleitorais e recursos perante o TSE.",
             "endpoint_publico": True,
         }
     if tribunal in {"stm"}:
         return {
-            "categoria": "Tribunal Superior",
-            "titulo": "Sugestoes para STM",
+            "categoria": "Superior Tribunal Militar (STM)",
+            "titulo": "Sugestões para o STM",
             "codigos": CODIGOS_TJM,
-            "observacao": "O STM compartilha a base militar para um teste inicial.",
+            "observacao": "Classes militares e originárias do STM.",
             "endpoint_publico": True,
         }
     if tribunal in {"cnj", "cjf", "csjt"}:
         return {
-            "categoria": "Conselho",
-            "titulo": f"Sugestoes para {tribunal.upper()}",
+            "categoria": "Conselhos da Justiça",
+            "titulo": f"Sugestões para o {tribunal.upper()}",
             "codigos": CODIGOS_CONSELHOS,
-            "observacao": "Predominam classes administrativas e disciplinares.",
+            "observacao": "Predominam processos administrativos e disciplinares.",
             "endpoint_publico": False,
         }
     if tribunal in {"stf"}:
         return {
-            "categoria": "Tribunal Superior",
-            "titulo": "Sugestoes para STF",
+            "categoria": "Supremo Tribunal Federal (STF)",
+            "titulo": "Sugestões para o STF",
             "codigos": [],
-            "observacao": "O STF nao aparece na lista publica de endpoints do DataJud consultada pelo app.",
+            "observacao": "O STF possui sistema próprio de dados abertos não integrado à API pública do DataJud.",
             "endpoint_publico": False,
         }
     if tribunal.startswith("tj"):
         return {
-            "categoria": "Tribunal de Justica",
-            "titulo": f"Sugestoes para {tribunal or 'tj'}",
+            "categoria": "Justiça Estadual (TJ)",
+            "titulo": f"Sugestões para o {tribunal.upper()}",
             "codigos": CODIGOS_TJ,
-            "observacao": "Base inicial util para TJMG, TJSP, TJRJ e demais TJs.",
+            "observacao": "Classes cíveis, criminais e de família mais frequentes nos Tribunais de Justiça.",
             "endpoint_publico": True,
         }
     return {
-        "categoria": "Nao mapeado",
-        "titulo": "Sugestoes basicas",
+        "categoria": "Outros Ramos / Órgãos",
+        "titulo": "Sugestões Gerais",
         "codigos": [],
-        "observacao": "Consulte as siglas e os codigos oficiais do CNJ para este tribunal.",
+        "observacao": "Consulte as siglas e os códigos oficiais na Tabela Processual Unificada do CNJ.",
         "endpoint_publico": True,
     }
 
@@ -629,37 +629,38 @@ def render_codigo_sugestoes(tribunal_sigla: str) -> None:
     sigla_mapeada = normalize_tribunal_sigla(str(st.session_state.get("sigla_mapa", "")))
     top_codigos = st.session_state.get("top_codigos", pd.DataFrame())
     qtd_mapa = int(st.session_state.get("qtd_mapa", 0) or 0)
-    with st.expander("Sugestoes de codigos para este tribunal", expanded=True):
+    with st.expander("💡 Sugestões de Classes e Códigos CNJ", expanded=True):
         if sigla_atual:
-            st.caption(f"Sigla atual: {sigla_atual.upper()} | Categoria detectada: {sugestoes['categoria']}")
+            st.markdown(f"🏛️ **Tribunal:** `{sigla_atual.upper()}` &nbsp;|&nbsp; 📋 **Ramo:** `{sugestoes['categoria']}`")
         else:
-            st.caption(f"Categoria detectada: {sugestoes['categoria']}")
+            st.markdown(f"📋 **Ramo:** `{sugestoes['categoria']}`")
         if (
             sigla_atual
             and sigla_atual == sigla_mapeada
             and isinstance(top_codigos, pd.DataFrame)
             and not top_codigos.empty
         ):
-            st.markdown("**Codigos mais comuns na amostra da sigla**")
+            st.markdown("**Classes CNJ mais frequentes na amostra deste tribunal:**")
             linhas = [
                 f"- `{row['classe_codigo']}` - {row['classe']}"
                 for _, row in top_codigos.head(10).iterrows()
             ]
             st.markdown("\n".join(linhas))
             if qtd_mapa:
-                st.caption(f"Mapa automatico baseado em ate {qtd_mapa:,} registros recentes da sigla.".replace(",", "."))
+                st.caption(f"Mapa automático baseado em até {qtd_mapa:,} registros recentes da sigla.".replace(",", "."))
         elif sugestoes["codigos"]:
+            st.markdown("**Classes CNJ sugeridas para consulta:**")
             linhas = [
                 f"- `{codigo}` - {classe}" for codigo, classe in sugestoes["codigos"]
             ]
             st.markdown("\n".join(linhas))
         else:
-            st.caption("Nenhuma sugestao automatica disponivel para esta sigla.")
+            st.caption("Nenhuma sugestão automática cadastrada para esta sigla.")
         st.caption(str(sugestoes["observacao"]))
         if not bool(sugestoes["endpoint_publico"]):
             st.warning(
-                "A lista publica de endpoints do DataJud nao mostra endpoint publico para esta sigla. "
-                "A consulta pode nao funcionar no app."
+                "A lista pública de endpoints do DataJud não indica endpoint público aberto para esta sigla. "
+                "A consulta pode não retornar dados no sistema."
             )
 
 
@@ -6913,19 +6914,20 @@ def render() -> None:
         .author-top-links {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.35rem;
+            gap: 0.28rem;
         }
         .author-top-links a {
             display: inline-flex;
             align-items: center;
-            padding: 0.2rem 0.55rem;
+            padding: 0.15rem 0.45rem;
             border: 1px solid rgba(212, 175, 55, 0.4);
             border-radius: 999px;
             color: #ffffff !important;
-            background: rgba(15, 44, 89, 0.8);
-            font-size: 0.75rem;
+            background: rgba(15, 44, 89, 0.75);
+            font-size: 0.7rem;
             font-weight: 700;
             text-decoration: none;
+            transition: all 0.2s ease-in-out;
         }
         .author-top-links a:hover {
             background: #d4af37;
@@ -7043,7 +7045,7 @@ def render() -> None:
         <div class="app-header">
             <div class="app-header-inner">
                 <div>
-                    <div class="app-kicker">⚖️ PORTAL TENHO DIREITO • JURIMETRIA DATAJUD</div>
+                    <div class="app-kicker">⚖️ <a href="https://tenhodireito.online" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar Portal Tenho Direito">PORTAL TENHO DIREITO</a> • JURIMETRIA DATAJUD</div>
                     <h1>Jurimetria Processual</h1>
                     <p>Pesquise e analise dados públicos do DataJud: tempos de tramitação (média, mediana, mínimo e máximo), desfechos, valores de causa e comparações por temas e tribunais.</p>
                 </div>
@@ -7052,7 +7054,7 @@ def render() -> None:
                     <div class="author-top-name">Criado por Lucas Martins</div>
                     <div class="author-top-sub">Bibliotecário e Advogado | CRB6-3621 | OAB/MG 243736</div>
                     <div class="author-top-links">
-                        <a href="https://datajud-wiki.cnj.jus.br/" target="_blank" style="background: linear-gradient(135deg, #d4af37, #f59e0b); color: #0f2c59 !important; font-weight: 800; border-color: #ffd700;">📘 Documentação DataJud</a>
+                        <a href="https://datajud-wiki.cnj.jus.br/" target="_blank">Documentação DataJud</a>
                         <a href="https://github.com/lucaslmfbib" target="_blank">GitHub</a>
                         <a href="https://www.linkedin.com/in/lucaslmf/" target="_blank">LinkedIn</a>
                         <a href="https://www.instagram.com/lucaslmf_/" target="_blank">Instagram</a>
