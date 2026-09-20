@@ -4934,8 +4934,12 @@ def build_sample_insights(
 
     valor_info = valor_causa_summary(df_anpp)
     if int(valor_info.get("com_valor", 0) or 0) > 0:
+        val_min_str = format_currency_br(valor_info.get("minimo")) if valor_info.get("minimo") is not None else "-"
+        val_max_str = format_currency_br(valor_info.get("maximo")) if valor_info.get("maximo") is not None else "-"
         insights.append(
-            f"O retorno trouxe valor da causa em `{format_int_br(valor_info['com_valor'])}` processos ({valor_info['cobertura']:.1f}% da amostra), com mediana de `{format_currency_br(valor_info['mediana'])}`."
+            f"O retorno trouxe valor da causa em `{format_int_br(valor_info['com_valor'])}` processos ({valor_info['cobertura']:.1f}% da amostra), "
+            f"com média de `{format_currency_br(valor_info['media'])}`, mediana de `{format_currency_br(valor_info['mediana'])}` "
+            f"(variação de `{val_min_str}` a `{val_max_str}`)."
         )
 
     return insights[:6]
@@ -5640,9 +5644,10 @@ def valor_causa_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
             "cobertura": cobertura,
             "media": None,
             "mediana": None,
+            "minimo": None,
+            "maximo": None,
             "p25": None,
             "p75": None,
-            "maximo": None,
         }
     return {
         "total": total,
@@ -5650,9 +5655,10 @@ def valor_causa_summary(df_anpp: pd.DataFrame) -> dict[str, Any]:
         "cobertura": cobertura,
         "media": float(valores.mean()),
         "mediana": float(valores.median()),
+        "minimo": float(valores.min()),
+        "maximo": float(valores.max()),
         "p25": float(valores.quantile(0.25)),
         "p75": float(valores.quantile(0.75)),
-        "maximo": float(valores.max()),
     }
 
 
@@ -6956,18 +6962,18 @@ def render() -> None:
             box-shadow: 0 12px 28px rgba(15, 44, 89, 0.12);
         }
         .theme-metric-label {
-            font-size: 0.82rem;
-            font-weight: 700;
-            line-height: 1.25;
+            font-size: 0.76rem !important;
+            font-weight: 700 !important;
+            line-height: 1.2 !important;
             color: #0f2c59;
             margin-bottom: 0.28rem;
             text-transform: uppercase;
-            letter-spacing: 0.03em;
+            letter-spacing: 0.04em;
         }
         .theme-metric-value {
-            font-size: clamp(1.35rem, 1.55vw, 2.15rem);
-            font-weight: 800;
-            line-height: 1.02;
+            font-size: clamp(0.92rem, 1.1vw, 1.18rem) !important;
+            font-weight: 700 !important;
+            line-height: 1.15 !important;
             color: #0d1b2a;
             white-space: normal;
             overflow-wrap: anywhere;
@@ -6980,23 +6986,25 @@ def render() -> None:
             border-radius: 999px;
             background: rgba(212, 175, 55, 0.15);
             color: #0f2c59;
-            font-size: 0.78rem;
+            font-size: 0.75rem !important;
             line-height: 1.1;
             font-weight: 700;
             white-space: normal;
             border: 1px solid rgba(212, 175, 55, 0.3);
         }
         div[data-testid="stMetric"] label[data-testid="stMetricLabel"] p {
-            font-size: 0.84rem;
-            line-height: 1.2;
-            font-weight: 700;
-            color: #0f2c59;
+            font-size: 0.76rem !important;
+            line-height: 1.2 !important;
+            font-weight: 700 !important;
+            color: #0f2c59 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
         div[data-testid="stMetricValue"] > div {
-            font-size: clamp(1.25rem, 1.5vw, 2rem);
-            line-height: 1.06;
-            color: #0d1b2a;
-            font-weight: 800;
+            font-size: clamp(0.92rem, 1.1vw, 1.18rem) !important;
+            line-height: 1.15 !important;
+            color: #0d1b2a !important;
+            font-weight: 700 !important;
             white-space: normal;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -7966,6 +7974,14 @@ def render() -> None:
             )
         else:
             c4.metric("Valor da causa", "Sem base")
+
+        if int(valor_causa_info["com_valor"] or 0) > 0:
+            st.markdown("**💰 Valor da Causa na Amostra (Estatísticas Financeiras)**")
+            vc_g1, vc_g2, vc_g3, vc_g4 = st.columns(4)
+            vc_g1.metric("Valor Medio", format_currency_br(valor_causa_info["media"]))
+            vc_g2.metric("Mediana", format_currency_br(valor_causa_info["mediana"]), delta="50% dos casos")
+            vc_g3.metric("Valor Minimo", format_currency_br(valor_causa_info["minimo"]))
+            vc_g4.metric("Valor Maximo", format_currency_br(valor_causa_info["maximo"]))
 
         if stats_tempo_geral["total_validos"] > 0:
             st.markdown("**⏱️ Tempo de Finalizacao / Tramitacao dos Processos (Visao Geral)**")
@@ -10090,13 +10106,15 @@ def render() -> None:
         st.caption("Mostra a evolucao mensal dos ajuizamentos dentro da amostra consultada.")
         st.pyplot(fig_mensal(df_stats_mensal), clear_figure=True)
 
-        st.subheader("Valor da causa")
+        st.subheader("💰 Valor da causa")
         if int(valor_causa_info_stats["com_valor"] or 0) > 0:
-            vc1, vc2, vc3, vc4 = st.columns(4)
+            vc1, vc2, vc3, vc4, vc5, vc6 = st.columns(6)
             vc1.metric("Processos com valor", format_int_br(valor_causa_info_stats["com_valor"]))
             vc2.metric("Cobertura", f"{valor_causa_info_stats['cobertura']:.1f}%")
             vc3.metric("Media", format_currency_br(valor_causa_info_stats["media"]))
             vc4.metric("Mediana", format_currency_br(valor_causa_info_stats["mediana"]))
+            vc5.metric("Valor Minimo", format_currency_br(valor_causa_info_stats["minimo"]))
+            vc6.metric("Valor Maximo", format_currency_br(valor_causa_info_stats["maximo"]))
             st.caption(
                 "Quando o tribunal retorna esse campo, o app mostra a distribuicao do valor da causa na amostra."
             )
@@ -10204,7 +10222,7 @@ def render() -> None:
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric(
             "Acao/classe lider",
-            shorten_display_label(str(top_classes_mapa.iloc[0]["classe"]), max_chars=28) if not top_classes_mapa.empty else "Sem base",
+            shorten_display_label(str(top_classes_mapa.iloc[0]["classe"]), max_chars=24) if not top_classes_mapa.empty else "Sem base",
             delta=(
                 f"{format_int_br(int(top_classes_mapa.iloc[0]['quantidade']))} processos"
                 if not top_classes_mapa.empty
@@ -10213,7 +10231,7 @@ def render() -> None:
         )
         mc2.metric(
             "Tema lider",
-            shorten_display_label(str(top_assuntos_mapa.iloc[0]["assunto"]), max_chars=28) if not top_assuntos_mapa.empty else "Sem base",
+            shorten_display_label(str(top_assuntos_mapa.iloc[0]["assunto"]), max_chars=24) if not top_assuntos_mapa.empty else "Sem base",
             delta=(
                 f"{format_int_br(int(top_assuntos_mapa.iloc[0]['quantidade']))} ocorrencias"
                 if not top_assuntos_mapa.empty
@@ -10222,7 +10240,7 @@ def render() -> None:
         )
         mc3.metric(
             "Orgao lider",
-            shorten_display_label(str(top_orgaos_mapa.iloc[0]["orgao_julgador"]), max_chars=28) if not top_orgaos_mapa.empty else "Sem base",
+            shorten_display_label(str(top_orgaos_mapa.iloc[0]["orgao_julgador"]), max_chars=24) if not top_orgaos_mapa.empty else "Sem base",
             delta=(
                 str(top_orgaos_mapa.iloc[0]["participacao"])
                 if not top_orgaos_mapa.empty and "participacao" in top_orgaos_mapa.columns
@@ -10449,7 +10467,7 @@ def render() -> None:
             )
         )
         top_classe_nome = (
-            shorten_display_label(str(top_classes_overview.iloc[0]["classe"]), max_chars=32)
+            shorten_display_label(str(top_classes_overview.iloc[0]["classe"]), max_chars=24)
             if not top_classes_overview.empty
             else "Sem base"
         )
@@ -10459,7 +10477,7 @@ def render() -> None:
             else ""
         )
         top_assunto_nome = (
-            shorten_display_label(str(top_assuntos_overview.iloc[0]["assunto"]), max_chars=32)
+            shorten_display_label(str(top_assuntos_overview.iloc[0]["assunto"]), max_chars=24)
             if not top_assuntos_overview.empty
             else "Sem base"
         )
@@ -10469,7 +10487,7 @@ def render() -> None:
             else ""
         )
         top_orgao_nome = (
-            shorten_display_label(str(top_orgaos_overview.iloc[0]["orgao_julgador"]), max_chars=32)
+            shorten_display_label(str(top_orgaos_overview.iloc[0]["orgao_julgador"]), max_chars=24)
             if not top_orgaos_overview.empty
             else "Sem base"
         )
