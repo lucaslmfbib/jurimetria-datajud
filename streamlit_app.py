@@ -898,16 +898,13 @@ ALL_TRIBUNALS_MAP: dict[str, str] = {
 
 
 def render_fluxo_simplificado_busca() -> None:
-    st.markdown("### 🔍 Pesquisa Rápida de Jurimetria")
-    st.caption("1º Escolha a Área do Direito ➡️ 2º Clique no Tribunal. Os gráficos e estatísticas são gerados automaticamente abaixo!")
-
     # 1. ESCOLHA A ÁREA DO DIREITO
     area_keys = list(LEGAL_AREAS_CATALOG.keys())
     if "active_legal_area" not in st.session_state:
         st.session_state["active_legal_area"] = "consumidor"
     active_area = st.session_state["active_legal_area"]
 
-    st.markdown("**1º Passo — Selecione a Área do Direito:**")
+    st.markdown("**Área do Direito**")
     area_cols = st.columns(min(len(area_keys), 5))
     for i, area_key in enumerate(area_keys):
         col = area_cols[i % 5]
@@ -950,7 +947,7 @@ def render_fluxo_simplificado_busca() -> None:
     st.markdown("---")
 
     # 2. ESCOLHA O TRIBUNAL (LOGO ABAIXO)
-    st.markdown("**2º Passo — Escolha o Tribunal (ou Todos os Tribunais do País):**")
+    st.markdown("**Selecione o tribunal**")
     top_quick_tribunals = [
         ("tjmg", "🏛️ TJMG"),
         ("tjsp", "🏛️ TJSP"),
@@ -7074,21 +7071,41 @@ def render() -> None:
             border-radius: var(--radius);
             background: rgba(255, 255, 255, 0.05);
         }
-        [data-testid="stSidebar"] .stButton > button {
-            border-radius: var(--radius);
-            border: 1px solid #d4af37;
-            background: linear-gradient(135deg, #0f2c59, #1e3a8a);
-            color: #ffffff !important;
-            font-weight: 700;
-            box-shadow: 0 4px 14px rgba(15, 44, 89, 0.35);
+        /* High Contrast & Clear Visibility for Buttons */
+        div[data-testid="stButton"] > button {
+            border-radius: 8px !important;
+            font-size: 0.9rem !important;
+            font-weight: 700 !important;
+            transition: all 0.2s ease-in-out !important;
         }
-        [data-testid="stSidebar"] .stButton > button * {
-            color: #ffffff !important;
+        div[data-testid="stButton"] > button[kind="secondary"] {
+            background-color: #0F2C59 !important;
+            color: #FFFFFF !important;
+            border: 1.5px solid #D4AF37 !important;
+            box-shadow: 0 4px 10px rgba(15, 44, 89, 0.12) !important;
         }
-        [data-testid="stSidebar"] .stButton > button:hover {
-            border-color: #f59e0b;
-            background: linear-gradient(135deg, #1e3a8a, #d4af37);
-            color: #ffffff !important;
+        div[data-testid="stButton"] > button[kind="secondary"] * {
+            color: #FFFFFF !important;
+            font-weight: 700 !important;
+        }
+        div[data-testid="stButton"] > button[kind="secondary"]:hover {
+            background-color: #1E3A8A !important;
+            border-color: #F59E0B !important;
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"] {
+            background: linear-gradient(135deg, #D4AF37 0%, #F59E0B 100%) !important;
+            color: #0F2C59 !important;
+            border: 2px solid #B48811 !important;
+            box-shadow: 0 6px 16px rgba(212, 175, 55, 0.4) !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"] * {
+            color: #0F2C59 !important;
+            font-weight: 800 !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"]:hover {
+            background: linear-gradient(135deg, #F59E0B 0%, #D4AF37 100%) !important;
+            color: #0F2C59 !important;
         }
         .author-card {
             margin: 0.8rem 0 1rem;
@@ -7380,7 +7397,6 @@ def render() -> None:
                 <div>
                     <div class="app-kicker">⚖️ <a href="https://tenhodireito.online" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar Portal Tenho Direito">PORTAL TENHO DIREITO</a> • <a href="https://www.cnj.jus.br/sistemas/datajud/" target="_blank" style="color: inherit; text-decoration: none;" title="Acessar DataJud CNJ">JURIMETRIA DATAJUD</a></div>
                     <h1>Jurimetria Processual</h1>
-                    <p>Pesquise e analise dados públicos do DataJud: tempos de tramitação (média, mediana, mínimo e máximo), desfechos, valores de causa e comparações por temas e tribunais.</p>
                 </div>
                 <div class="author-top-card">
                     <div class="author-top-kicker">SOBRE O PROJETO</div>
