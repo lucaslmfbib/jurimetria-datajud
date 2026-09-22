@@ -7634,67 +7634,92 @@ def render() -> None:
             border-radius: var(--radius);
             background: rgba(255, 255, 255, 0.05);
         }
-        /* High Contrast & Clear Visibility for Buttons */
+        /* High Contrast & Clear Visibility for Buttons (Matching Image 2) */
+        .stApp button,
         div[data-testid="stButton"] > button,
-        div[data-testid="stDownloadButton"] > button {
+        div[data-testid="stDownloadButton"] > button,
+        button[data-testid^="stBaseButton"] {
             border-radius: 8px !important;
             font-size: 0.9rem !important;
             font-weight: 800 !important;
             color: #FFFFFF !important;
             transition: all 0.2s ease-in-out !important;
         }
+        .stApp button *,
         div[data-testid="stButton"] > button *,
-        div[data-testid="stDownloadButton"] > button * {
+        div[data-testid="stDownloadButton"] > button *,
+        button[data-testid^="stBaseButton"] * {
             color: #FFFFFF !important;
             font-weight: 800 !important;
         }
+        /* SECONDARY (UNSELECTED) BUTTONS - Deep Navy Blue with Gold Border & White Bold Text */
+        .stApp button[kind="secondary"],
+        button[data-testid="stBaseButton-secondary"],
         div[data-testid="stButton"] > button[kind="secondary"],
         div[data-testid="stDownloadButton"] > button[kind="secondary"] {
             background-color: #1B3A6B !important;
+            background: linear-gradient(135deg, #1B3A6B 0%, #152E54 100%) !important;
             color: #FFFFFF !important;
-            border: 2px solid rgba(212, 175, 55, 0.5) !important;
-            box-shadow: 0 4px 12px rgba(27, 58, 107, 0.35) !important;
-            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6) !important;
+            border: 2px solid rgba(212, 175, 55, 0.6) !important;
+            box-shadow: 0 4px 12px rgba(27, 58, 107, 0.4) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
         }
+        .stApp button[kind="secondary"] *,
+        button[data-testid="stBaseButton-secondary"] *,
         div[data-testid="stButton"] > button[kind="secondary"] *,
         div[data-testid="stDownloadButton"] > button[kind="secondary"] * {
             color: #FFFFFF !important;
             font-weight: 800 !important;
-            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
         }
+        .stApp button[kind="secondary"]:hover,
+        button[data-testid="stBaseButton-secondary"]:hover,
         div[data-testid="stButton"] > button[kind="secondary"]:hover,
         div[data-testid="stDownloadButton"] > button[kind="secondary"]:hover {
             background-color: #234B8A !important;
+            background: linear-gradient(135deg, #234B8A 0%, #1B3A6B 100%) !important;
             border-color: #F5C842 !important;
             color: #FFFFFF !important;
-            box-shadow: 0 6px 18px rgba(35, 75, 138, 0.45) !important;
+            box-shadow: 0 6px 18px rgba(35, 75, 138, 0.5) !important;
             transform: translateY(-1px) !important;
         }
+        .stApp button[kind="secondary"]:hover *,
+        button[data-testid="stBaseButton-secondary"]:hover *,
         div[data-testid="stButton"] > button[kind="secondary"]:hover *,
         div[data-testid="stDownloadButton"] > button[kind="secondary"]:hover * {
             color: #FFFFFF !important;
         }
+        /* PRIMARY (SELECTED) BUTTONS - Golden Gradient with Bright Gold Border & White Bold Text */
+        .stApp button[kind="primary"],
+        button[data-testid="stBaseButton-primary"],
         div[data-testid="stButton"] > button[kind="primary"],
         div[data-testid="stDownloadButton"] > button[kind="primary"] {
             background: linear-gradient(135deg, #D4AF37 0%, #B8941F 50%, #E6C84D 100%) !important;
             color: #FFFFFF !important;
-            border: 2px solid #C5A028 !important;
-            box-shadow: 0 6px 20px rgba(212, 175, 55, 0.5) !important;
-            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
+            border: 2px solid #F5C842 !important;
+            box-shadow: 0 6px 20px rgba(212, 175, 55, 0.6) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8) !important;
         }
+        .stApp button[kind="primary"] *,
+        button[data-testid="stBaseButton-primary"] *,
         div[data-testid="stButton"] > button[kind="primary"] *,
         div[data-testid="stDownloadButton"] > button[kind="primary"] * {
             color: #FFFFFF !important;
             font-weight: 800 !important;
-            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8) !important;
         }
+        .stApp button[kind="primary"]:hover,
+        button[data-testid="stBaseButton-primary"]:hover,
         div[data-testid="stButton"] > button[kind="primary"]:hover,
         div[data-testid="stDownloadButton"] > button[kind="primary"]:hover {
             background: linear-gradient(135deg, #E6C84D 0%, #D4AF37 50%, #C5A028 100%) !important;
             color: #FFFFFF !important;
-            box-shadow: 0 8px 24px rgba(212, 175, 55, 0.6) !important;
+            border-color: #FFE066 !important;
+            box-shadow: 0 8px 24px rgba(212, 175, 55, 0.7) !important;
             transform: translateY(-1px) !important;
         }
+        .stApp button[kind="primary"]:hover *,
+        button[data-testid="stBaseButton-primary"]:hover *,
         div[data-testid="stButton"] > button[kind="primary"]:hover *,
         div[data-testid="stDownloadButton"] > button[kind="primary"]:hover * {
             color: #FFFFFF !important;
