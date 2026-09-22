@@ -664,6 +664,147 @@ def render_codigo_sugestoes(tribunal_sigla: str) -> None:
             )
 
 
+LEGAL_AREAS_CATALOG: dict[str, dict[str, Any]] = {
+    "penal": {
+        "nome": "Penal & Criminal",
+        "icone": "⚖️",
+        "descricao": "Crimes, inquéritos, execuções penais, habeas corpus e acordos penais",
+        "acoes": [
+            (283, "Ação Penal - Procedimento Ordinário"),
+            (386, "Execução da Pena"),
+            (307, "Habeas Corpus Criminal"),
+            (279, "Inquérito Policial"),
+            (282, "Ação Penal - Procedimento Sumário"),
+            (10943, "Auto de Prisão em Flagrante"),
+            (280, "Termo Circunstanciado (JECRIM)"),
+            (12729, "Acordo de Não Persecução Penal (ANPP)"),
+        ],
+    },
+    "civel": {
+        "nome": "Cível Geral",
+        "icone": "📜",
+        "descricao": "Contratos, cobranças, despejos, execuções e procedimentos cíveis",
+        "acoes": [
+            (7, "Procedimento Comum Cível"),
+            (159, "Execução de Título Extrajudicial"),
+            (156, "Cumprimento de Sentença"),
+            (40, "Ação Monitória"),
+            (12154, "Despejo por Falta de Pagamento"),
+            (1107, "Busca e Apreensão em Alienação Fiduciária"),
+            (11984, "Indenização por Dano Material/Moral"),
+            (10006, "Obrigação de Fazer / Não Fazer"),
+        ],
+    },
+    "consumidor": {
+        "nome": "Direito do Consumidor",
+        "icone": "🛒",
+        "descricao": "Ações de consumo, cobranças indevidas, defeitos em produtos e serviços",
+        "acoes": [
+            (436, "Procedimento do Juizado Especial Cível"),
+            (7, "Procedimento Comum Cível (Consumidor)"),
+            (11984, "Indenização por Dano Moral / Material"),
+            (10006, "Obrigação de Fazer (Cancelamento/Negativação)"),
+            (40, "Ação Monitória de Débito de Consumo"),
+            (159, "Execução de Contrato de Consumo"),
+        ],
+    },
+    "trabalhista": {
+        "nome": "Trabalhista (TRT/TST)",
+        "icone": "👔",
+        "descricao": "Verbas rescisórias, horas extras, rescisões e execuções trabalhistas",
+        "acoes": [
+            (1125, "Ação Trabalhista - Rito Ordinário"),
+            (1126, "Ação Trabalhista - Rito Sumaríssimo"),
+            (1102, "Execução Trabalhista"),
+            (1116, "Ação Rescisória Trabalhista"),
+            (1009, "Consignação em Pagamento Trabalhista"),
+            (1127, "Ação Trabalhista - Rito Sumário"),
+        ],
+    },
+    "tributario": {
+        "nome": "Tributário & Fiscal",
+        "icone": "🏦",
+        "descricao": "Execuções fiscais, impostos, taxas, anulações e mandados de segurança",
+        "acoes": [
+            (1116, "Execução Fiscal"),
+            (120, "Mandado de Segurança Cível/Tributário"),
+            (7, "Ação Anulatória de Débito Fiscal"),
+            (159, "Execução de Título Extrajudicial Tributário"),
+            (40, "Ação Monitória Tributária"),
+        ],
+    },
+    "familia": {
+        "nome": "Família & Sucessões",
+        "icone": "👨‍👩‍👧",
+        "descricao": "Divórcios, pensão alimentícia, guarda, inventários e partilhas",
+        "acoes": [
+            (98, "Divórcio Litigioso"),
+            (97, "Divórcio Consensual"),
+            (1199, "Alimentos - Lei Especial Nº 5.478/68"),
+            (39, "Inventário e Partilha"),
+            (131, "Regulamentação de Visitas / Guarda"),
+            (12015, "Execução de Alimentos"),
+        ],
+    },
+    "previdenciario": {
+        "nome": "Previdenciário (INSS)",
+        "icone": "👴",
+        "descricao": "Aposentadorias, auxílio-doença, BPC/LOAS e revisões de benefícios",
+        "acoes": [
+            (7, "Procedimento Comum Cível (Previdenciário)"),
+            (436, "Juizado Especial Cível/Federal (Previdenciário)"),
+            (11984, "Concessão de Aposentadoria / Auxílio"),
+            (156, "Cumprimento de Sentença contra o INSS"),
+        ],
+    },
+    "constitucional": {
+        "nome": "Constitucional & Coletivo",
+        "icone": "🏛️",
+        "descricao": "Mandados de segurança, ações civis públicas, direitos fundamentais",
+        "acoes": [
+            (120, "Mandado de Segurança Cível"),
+            (65, "Ação Civil Pública"),
+            (66, "Ação Popular"),
+            (12028, "Habeas Data"),
+        ],
+    },
+    "empresarial": {
+        "nome": "Empresarial & Falimentar",
+        "icone": "🏢",
+        "descricao": "Recuperações judiciais, falências, conflitos societários e marcas",
+        "acoes": [
+            (129, "Recuperação Judicial"),
+            (108, "Falência de Empresários e Sociedades"),
+            (7, "Dissolução Parcial de Sociedade"),
+            (159, "Execução de Título Empresarial"),
+        ],
+    },
+}
+
+
+def render_acoes_por_area_selector() -> None:
+    st.markdown("**📂 Ações e Classes mais Comuns por Área do Direito**")
+    st.caption("Escolha o ramo jurídico para aplicar instantaneamente o código CNJ da ação desejada:")
+    
+    selected_area_key = st.selectbox(
+        "Área do Direito:",
+        options=list(LEGAL_AREAS_CATALOG.keys()),
+        format_func=lambda k: f"{LEGAL_AREAS_CATALOG[k]['icone']} {LEGAL_AREAS_CATALOG[k]['nome']}",
+        key="selected_legal_area_key",
+    )
+    
+    area_info = LEGAL_AREAS_CATALOG[selected_area_key]
+    st.caption(f"ℹ️ *{area_info['descricao']}*")
+    
+    for idx, (codigo_cnj, nome_acao) in enumerate(area_info["acoes"]):
+        btn_label = f"`{codigo_cnj}` - {nome_acao}"
+        if st.button(btn_label, key=f"btn_area_{selected_area_key}_{codigo_cnj}_{idx}", use_container_width=True):
+            st.session_state["classe_codigo_sidebar"] = int(codigo_cnj)
+            st.session_state["modo_busca_sidebar"] = "classe"
+            st.toast(f"✅ Classe CNJ {codigo_cnj} ({nome_acao}) selecionada!")
+            st.rerun()
+
+
 def get_estrutura_options(tribunal_sigla: str) -> dict[str, Any]:
     tribunal = normalize_tribunal_sigla(tribunal_sigla)
     opcoes_base = ["Todos"]
@@ -7103,6 +7244,8 @@ def render() -> None:
                     help="Codigo CNJ do tipo de processo ou recurso.",
                 )
             )
+            with st.expander("📂 Ações por Área (Penal, Cível, Consumidor...)", expanded=False):
+                render_acoes_por_area_selector()
             with st.expander("Codigos sugeridos", expanded=False):
                 render_codigo_sugestoes(tribunal_sigla_pre)
 
