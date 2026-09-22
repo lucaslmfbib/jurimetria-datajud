@@ -665,6 +665,19 @@ def render_codigo_sugestoes(tribunal_sigla: str) -> None:
 
 
 LEGAL_AREAS_CATALOG: dict[str, dict[str, Any]] = {
+    "consumidor": {
+        "nome": "Consumidor",
+        "icone": "🛒",
+        "descricao": "Ações de consumo, cobranças indevidas, defeitos em produtos e serviços",
+        "acoes": [
+            (436, "Procedimento do Juizado Especial Cível"),
+            (7, "Procedimento Comum Cível (Consumidor)"),
+            (11984, "Indenização por Dano Moral / Material"),
+            (10006, "Obrigação de Fazer (Cancelamento/Negativação)"),
+            (40, "Ação Monitória de Débito de Consumo"),
+            (159, "Execução de Contrato de Consumo"),
+        ],
+    },
     "penal": {
         "nome": "Penal & Criminal",
         "icone": "⚖️",
@@ -693,19 +706,6 @@ LEGAL_AREAS_CATALOG: dict[str, dict[str, Any]] = {
             (1107, "Busca e Apreensão em Alienação Fiduciária"),
             (11984, "Indenização por Dano Material/Moral"),
             (10006, "Obrigação de Fazer / Não Fazer"),
-        ],
-    },
-    "consumidor": {
-        "nome": "Direito do Consumidor",
-        "icone": "🛒",
-        "descricao": "Ações de consumo, cobranças indevidas, defeitos em produtos e serviços",
-        "acoes": [
-            (436, "Procedimento do Juizado Especial Cível"),
-            (7, "Procedimento Comum Cível (Consumidor)"),
-            (11984, "Indenização por Dano Moral / Material"),
-            (10006, "Obrigação de Fazer (Cancelamento/Negativação)"),
-            (40, "Ação Monitória de Débito de Consumo"),
-            (159, "Execução de Contrato de Consumo"),
         ],
     },
     "trabalhista": {
@@ -789,7 +789,7 @@ def render_acoes_por_area_selector(key_prefix: str = "main") -> None:
     area_keys = list(LEGAL_AREAS_CATALOG.keys())
     current_area_session_key = f"{key_prefix}_active_legal_area"
     if current_area_session_key not in st.session_state:
-        st.session_state[current_area_session_key] = "penal"
+        st.session_state[current_area_session_key] = "consumidor"
 
     # Renderiza botões em grade para os ramos jurídicos
     area_cols = st.columns(min(len(area_keys), 5))
@@ -7236,7 +7236,7 @@ def render() -> None:
     api_key = resolve_api_key()
 
     # BOTÃO / PAINEL SUPERIOR DA TELA INICIAL (FORA DA BARRA LATERAL)
-    with st.expander("📂 **Buscar Ações por Área do Direito** (Penal, Cível, Consumidor, Trabalhista, Tributário, Família...)", expanded=False):
+    with st.expander("📂 **Buscar Ações por Área do Direito** (Consumidor, Penal, Cível, Trabalhista, Tributário, Família...)", expanded=False):
         render_acoes_por_area_selector(key_prefix="top_main")
 
     with st.sidebar:
@@ -7273,8 +7273,6 @@ def render() -> None:
                     help="Codigo CNJ do tipo de processo ou recurso.",
                 )
             )
-            with st.expander("📂 Ações por Área (Penal, Cível, Consumidor...)", expanded=False):
-                render_acoes_por_area_selector(key_prefix="sidebar")
             with st.expander("Codigos sugeridos", expanded=False):
                 render_codigo_sugestoes(tribunal_sigla_pre)
 
@@ -8248,14 +8246,35 @@ def render() -> None:
         st.session_state["area_resultados_signature"] = f"{int(bool(usar_numero_processo))}|{'|'.join(area_options)}"
         st.session_state["area_resultados_selecionada"] = default_area
 
-    st.markdown("**Navegacao dos resultados**")
-    area_resultados = st.radio(
-        "Area dos resultados",
-        options=area_options,
-        horizontal=True,
-        key="area_resultados_selecionada",
-        label_visibility="collapsed",
-    )
+    st.markdown("### 📊 Painéis de Análise Jurimétrica e Resultados")
+    st.caption("Alterne entre a visão geral, lista de processos, estatísticas completas, mapa por tribunal e downloads:")
+
+    area_icon_map = {
+        "Visao geral": ("📊", "Visão geral"),
+        "Processos": ("📑", "Lista de Processos"),
+        "Temas e estrategia": ("💡", "Temas e Estratégia"),
+        "Busca por entendimento": ("🔎", "Busca por Entendimento"),
+        "Estatisticas": ("📈", "Estatísticas"),
+        "Mapa do tribunal": ("🏛️", "Mapa por Tribunal"),
+        "Analise do processo": ("🔬", "Análise do Processo"),
+        "Downloads": ("📥", "Downloads & Exportação"),
+    }
+
+    cols_nav = st.columns(min(len(area_options), 7))
+    for idx, opt in enumerate(area_options):
+        col_nav = cols_nav[idx % len(cols_nav)]
+        icon, label_text = area_icon_map.get(opt, ("📌", opt))
+        is_selected = (st.session_state.get("area_resultados_selecionada") == opt)
+        if col_nav.button(
+            f"{icon} {label_text}",
+            key=f"nav_analysis_btn_{opt}_{idx}",
+            type="primary" if is_selected else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["area_resultados_selecionada"] = opt
+            st.rerun()
+
+    area_resultados = st.session_state.get("area_resultados_selecionada", default_area)
 
     if not assuntos_distintos.empty and area_resultados == "Visao geral" and not usar_numero_processo:
         with st.expander("Ver temas diferentes desta amostra", expanded=False):
