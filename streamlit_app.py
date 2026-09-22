@@ -7635,47 +7635,69 @@ def render() -> None:
             background: rgba(255, 255, 255, 0.05);
         }
         /* High Contrast & Clear Visibility for Buttons */
-        div[data-testid="stButton"] > button {
+        div[data-testid="stButton"] > button,
+        div[data-testid="stDownloadButton"] > button {
             border-radius: 8px !important;
             font-size: 0.9rem !important;
-            font-weight: 700 !important;
+            font-weight: 800 !important;
+            color: #FFFFFF !important;
             transition: all 0.2s ease-in-out !important;
         }
-        div[data-testid="stButton"] > button[kind="secondary"] {
+        div[data-testid="stButton"] > button *,
+        div[data-testid="stDownloadButton"] > button * {
+            color: #FFFFFF !important;
+            font-weight: 800 !important;
+        }
+        div[data-testid="stButton"] > button[kind="secondary"],
+        div[data-testid="stDownloadButton"] > button[kind="secondary"] {
             background-color: #1B3A6B !important;
             color: #FFFFFF !important;
             border: 2px solid rgba(212, 175, 55, 0.5) !important;
             box-shadow: 0 4px 12px rgba(27, 58, 107, 0.35) !important;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6) !important;
         }
-        div[data-testid="stButton"] > button[kind="secondary"] * {
+        div[data-testid="stButton"] > button[kind="secondary"] *,
+        div[data-testid="stDownloadButton"] > button[kind="secondary"] * {
             color: #FFFFFF !important;
-            font-weight: 700 !important;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+            font-weight: 800 !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6) !important;
         }
-        div[data-testid="stButton"] > button[kind="secondary"]:hover {
+        div[data-testid="stButton"] > button[kind="secondary"]:hover,
+        div[data-testid="stDownloadButton"] > button[kind="secondary"]:hover {
             background-color: #234B8A !important;
             border-color: #F5C842 !important;
             color: #FFFFFF !important;
             box-shadow: 0 6px 18px rgba(35, 75, 138, 0.45) !important;
             transform: translateY(-1px) !important;
         }
-        div[data-testid="stButton"] > button[kind="primary"] {
+        div[data-testid="stButton"] > button[kind="secondary"]:hover *,
+        div[data-testid="stDownloadButton"] > button[kind="secondary"]:hover * {
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"],
+        div[data-testid="stDownloadButton"] > button[kind="primary"] {
             background: linear-gradient(135deg, #D4AF37 0%, #B8941F 50%, #E6C84D 100%) !important;
-            color: #0D1B2A !important;
+            color: #FFFFFF !important;
             border: 2px solid #C5A028 !important;
             box-shadow: 0 6px 20px rgba(212, 175, 55, 0.5) !important;
-            text-shadow: none !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
         }
-        div[data-testid="stButton"] > button[kind="primary"] * {
-            color: #0D1B2A !important;
+        div[data-testid="stButton"] > button[kind="primary"] *,
+        div[data-testid="stDownloadButton"] > button[kind="primary"] * {
+            color: #FFFFFF !important;
             font-weight: 800 !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7) !important;
         }
-        div[data-testid="stButton"] > button[kind="primary"]:hover {
+        div[data-testid="stButton"] > button[kind="primary"]:hover,
+        div[data-testid="stDownloadButton"] > button[kind="primary"]:hover {
             background: linear-gradient(135deg, #E6C84D 0%, #D4AF37 50%, #C5A028 100%) !important;
-            color: #0D1B2A !important;
+            color: #FFFFFF !important;
             box-shadow: 0 8px 24px rgba(212, 175, 55, 0.6) !important;
             transform: translateY(-1px) !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"]:hover *,
+        div[data-testid="stDownloadButton"] > button[kind="primary"]:hover * {
+            color: #FFFFFF !important;
         }
         .author-card {
             margin: 0.8rem 0 1rem;
