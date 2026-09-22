@@ -779,6 +779,51 @@ LEGAL_AREAS_CATALOG: dict[str, dict[str, Any]] = {
             (159, "Execução de Título Empresarial"),
         ],
     },
+    "administrativo": {
+        "nome": "Administrativo & Improbidade",
+        "icone": "🛡️",
+        "descricao": "Improbidade administrativa, servidor público, licitações e desapropriações",
+        "acoes": [
+            (64, "Ação Civil de Improbidade Administrativa"),
+            (65, "Ação Civil Pública Administrativa"),
+            (91, "Desapropriação"),
+            (7, "Procedimento Comum Cível (Servidor Público / Contrato)"),
+            (120, "Mandado de Segurança"),
+        ],
+    },
+    "ambiental": {
+        "nome": "Ambiental & Agrário",
+        "icone": "🌿",
+        "descricao": "Ações ambientais, crimes contra o meio ambiente, desmatamento e demarcação",
+        "acoes": [
+            (65, "Ação Civil Pública Ambiental"),
+            (283, "Ação Penal - Crimes Contra o Meio Ambiente"),
+            (66, "Ação Popular Ambiental"),
+            (7, "Ação Anulatória de Multa Ambiental"),
+        ],
+    },
+    "eleitoral": {
+        "nome": "Direito Eleitoral",
+        "icone": "🗳️",
+        "descricao": "Prestações de contas eleitorais, impugnações de mandato e recursos",
+        "acoes": [
+            (11531, "Prestação de Contas Eleitorais"),
+            (11538, "Representação Eleitoral"),
+            (11527, "Ação de Impugnação de Mandato Eletivo (AIME)"),
+            (11525, "Ação de Investigação Judicial Eleitoral (AIJE)"),
+        ],
+    },
+    "infancia": {
+        "nome": "Infância & Juventude",
+        "icone": "👶",
+        "descricao": "Adoções, destituição do poder familiar, guarda e atos infracionais",
+        "acoes": [
+            (48, "Adoção c/c Destituição do Poder Familiar"),
+            (100, "Medida de Proteção à Criança e Adolescente"),
+            (289, "Apuração de Ato Infracional"),
+            (131, "Guarda e Tutela da Infância"),
+        ],
+    },
 }
 
 
@@ -924,11 +969,47 @@ def render_fluxo_simplificado_busca() -> None:
             st.session_state["trigger_execute_search"] = True
             st.rerun()
 
+    # Barra selectbox complementar para todas as áreas do Direito mapeadas no DataJud
+    active_index = area_keys.index(active_area) if active_area in area_keys else 0
+    selected_extra_area = st.selectbox(
+        "Todas as áreas do Direito mapeadas no DataJud:",
+        options=area_keys,
+        index=active_index,
+        format_func=lambda k: f"{LEGAL_AREAS_CATALOG[k]['icone']} {LEGAL_AREAS_CATALOG[k]['nome']} — {LEGAL_AREAS_CATALOG[k]['descricao']}",
+        key="select_extra_area_dropdown",
+    )
+    if selected_extra_area != active_area:
+        st.session_state["active_legal_area"] = selected_extra_area
+        first_code = LEGAL_AREAS_CATALOG[selected_extra_area]["acoes"][0][0]
+        st.session_state["classe_codigo_sidebar"] = int(first_code)
+        st.session_state["modo_busca_sidebar"] = "classe"
+        st.session_state["trigger_execute_search"] = True
+        st.rerun()
+
     active_area_info = LEGAL_AREAS_CATALOG[st.session_state["active_legal_area"]]
 
-    # Expander discreto para escolher uma ação específica da área
-    with st.expander(f"📌 Ver ações mais frequentes de {active_area_info['nome']} (opcional)", expanded=False):
+    # Expander com barra de seleção e botões para as ações da área
+    with st.expander(f"📌 Ações e Classes CNJ de {active_area_info['nome']}", expanded=False):
         st.caption(f"ℹ️ *{active_area_info['descricao']}*")
+        action_options = active_area_info["acoes"]
+        
+        selected_action_tuple = st.selectbox(
+            f"Selecione uma ação específica da área de {active_area_info['nome']}:",
+            options=action_options,
+            format_func=lambda t: f"📌 Código {t[0]} — {t[1]}",
+            key=f"select_action_dropdown_{active_area}",
+        )
+        if selected_action_tuple:
+            chosen_code = selected_action_tuple[0]
+            current_class_code = int(st.session_state.get("classe_codigo_sidebar", 0) or 0)
+            if chosen_code != current_class_code:
+                st.session_state["classe_codigo_sidebar"] = int(chosen_code)
+                st.session_state["modo_busca_sidebar"] = "classe"
+                st.session_state["trigger_execute_search"] = True
+                st.toast(f"✅ Classe CNJ {chosen_code} selecionada!")
+                st.rerun()
+
+        st.markdown("**Ações mais frequentes:**")
         action_cols = st.columns(2)
         for idx, (codigo_cnj, nome_acao) in enumerate(active_area_info["acoes"]):
             a_col = action_cols[idx % 2]
@@ -946,7 +1027,7 @@ def render_fluxo_simplificado_busca() -> None:
 
     st.markdown("---")
 
-    # 2. ESCOLHA O TRIBUNAL (LOGO ABAIXO)
+    # 2. ESCOLHA O TRIBUNAL
     st.markdown("**Selecione o tribunal**")
     top_quick_tribunals = [
         ("tjmg", "🏛️ TJMG"),
@@ -990,6 +1071,71 @@ def render_fluxo_simplificado_busca() -> None:
         st.session_state["tribunal_sigla_sidebar"] = selected_tribunal_from_dropdown
         st.session_state["trigger_execute_search"] = True
         st.rerun()
+
+    st.markdown("---")
+
+    # 3. FILTRO DE TEMPO E VELOCIDADE DA CONSULTA
+    st.markdown("**Filtro por período de ajuizamento & Velocidade da consulta**")
+    
+    col_tempo_preset, col_speed_preset = st.columns([3, 2])
+    
+    with col_tempo_preset:
+        time_presets = [
+            ("todos", "🗓️ Todo o período"),
+            ("2026", "📅 2026"),
+            ("2025_2026", "📅 2025-2026"),
+            ("ultimos_3_anos", "📅 Últimos 3 Anos"),
+            ("ultimos_5_anos", "📅 Últimos 5 Anos"),
+        ]
+        active_time_preset = st.session_state.get("active_time_preset", "todos")
+        t_cols = st.columns(len(time_presets))
+        hoje = date.today()
+        for idx, (p_code, p_label) in enumerate(time_presets):
+            t_col = t_cols[idx]
+            is_t_active = (active_time_preset == p_code)
+            if t_col.button(
+                p_label,
+                key=f"time_preset_btn_{p_code}_{idx}",
+                type="primary" if is_t_active else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state["active_time_preset"] = p_code
+                if p_code == "todos":
+                    st.session_state["aplicar_periodo_sidebar"] = False
+                elif p_code == "2026":
+                    st.session_state["data_inicio_sidebar"] = date(2026, 1, 1)
+                    st.session_state["data_fim_sidebar"] = hoje
+                    st.session_state["aplicar_periodo_sidebar"] = True
+                elif p_code == "2025_2026":
+                    st.session_state["data_inicio_sidebar"] = date(2025, 1, 1)
+                    st.session_state["data_fim_sidebar"] = hoje
+                    st.session_state["aplicar_periodo_sidebar"] = True
+                elif p_code == "ultimos_3_anos":
+                    st.session_state["data_inicio_sidebar"] = date(hoje.year - 3, 1, 1)
+                    st.session_state["data_fim_sidebar"] = hoje
+                    st.session_state["aplicar_periodo_sidebar"] = True
+                elif p_code == "ultimos_5_anos":
+                    st.session_state["data_inicio_sidebar"] = date(hoje.year - 5, 1, 1)
+                    st.session_state["data_fim_sidebar"] = hoje
+                    st.session_state["aplicar_periodo_sidebar"] = True
+                st.session_state["trigger_execute_search"] = True
+                st.rerun()
+
+    with col_speed_preset:
+        sample_size_options = [150, 300, 700]
+        current_sample_size = int(st.session_state.get("sample_size_sidebar", 150) or 150)
+        chosen_sample_size = st.radio(
+            "Velocidade:",
+            options=sample_size_options,
+            index=sample_size_options.index(current_sample_size) if current_sample_size in sample_size_options else 0,
+            format_func=lambda s: f"⚡ Rápido ({s} casos)" if s == 150 else (f"📊 Padrão ({s} casos)" if s == 300 else f"🔍 Completo ({s} casos)"),
+            horizontal=True,
+            key="sample_size_radio_top",
+        )
+        if chosen_sample_size != current_sample_size:
+            st.session_state["sample_size_sidebar"] = chosen_sample_size
+            st.session_state["trigger_execute_search"] = True
+            st.rerun()
 
     st.markdown("---")
 
@@ -7562,7 +7708,7 @@ def render() -> None:
             )
             cpf_cnpj = normalize_document_search_value(
                 st.text_input(
-                    "CPF/CNPJ (opcional, melhor com nome)",
+                    "CPF/CNPJ",
                     key="cpf_cnpj_sidebar",
                     placeholder="Ex.: 12345678900",
                     help="Tenta conferir documento quando o tribunal expoe esse dado.",
@@ -7570,7 +7716,7 @@ def render() -> None:
             )
             texto_livre = normalize_free_text_query(
                 st.text_input(
-                    "Palavra-chave adicional (opcional)",
+                    "Palavra-chave adicional",
                     key="texto_livre_parte_sidebar",
                     placeholder="Ex.: liminar, improbidade, execucao fiscal",
                     help="Ajuda a restringir a busca por parte a um contexto processual mais especifico.",
@@ -7591,7 +7737,7 @@ def render() -> None:
             )
             tema_consulta = normalize_assunto_filtro(
                 st.text_input(
-                    "Tema exato (opcional)",
+                    "Tema exato",
                     key="tema_livre_sidebar",
                     placeholder="Ex.: consumidor, saude suplementar",
                     help="Se quiser, combine a palavra-chave com um assunto exato do DataJud.",
@@ -7600,7 +7746,7 @@ def render() -> None:
         else:
             tema_consulta = normalize_assunto_filtro(
                 st.text_input(
-                    "Tema (opcional)",
+                    "Tema",
                     key=tema_text_key,
                     placeholder="Digite um tema para refinar a classe processual",
                     help="Use para afunilar a classe por assunto.",
@@ -7713,7 +7859,7 @@ def render() -> None:
 
         estrutura_info = get_estrutura_options(tribunal_sigla)
         estrutura_filtro = st.selectbox(
-            "Recorte estrutural (opcional)",
+            "Recorte estrutural",
             options=estrutura_info["opcoes"],
             index=0,
             key="estrutura_filtro_sidebar",
