@@ -25,7 +25,7 @@ CNJ_CLASSES_URL = "https://www.cnj.jus.br/sgt/consulta_publica_classes.php"
 JUS_BR_URL = "https://www.jus.br/"
 ESCRITORIO_DIGITAL_URL = "https://www.escritoriodigital.jus.br/"
 MAX_PAGE_SIZE = 10000
-MAX_TOTAL_SIZE = 50000
+MAX_TOTAL_SIZE = 50000  # Suporta até Base Completa
 DATAJUD_TIMEOUT_SECONDS = 120
 DATAJUD_RETRYABLE_STATUS = {502, 503, 504}
 DATAJUD_MAX_RETRIES = 2
@@ -970,45 +970,14 @@ def render_fluxo_simplificado_busca() -> None:
             st.session_state["trigger_execute_search"] = True
             st.rerun()
 
-    # Barra selectbox complementar para todas as áreas do Direito mapeadas no DataJud
-    active_index = area_keys.index(active_area) if active_area in area_keys else 0
-    selected_extra_area = st.selectbox(
-        "Todas as áreas do Direito mapeadas no DataJud:",
-        options=area_keys,
-        index=active_index,
-        format_func=lambda k: f"{LEGAL_AREAS_CATALOG[k]['icone']} {LEGAL_AREAS_CATALOG[k]['nome']} — {LEGAL_AREAS_CATALOG[k]['descricao']}",
-        key="select_extra_area_dropdown",
-    )
-    if selected_extra_area != active_area:
-        st.session_state["active_legal_area"] = selected_extra_area
-        first_code = LEGAL_AREAS_CATALOG[selected_extra_area]["acoes"][0][0]
-        st.session_state["classe_codigo_sidebar"] = int(first_code)
-        st.session_state["modo_busca_sidebar"] = "classe"
-        st.session_state["trigger_execute_search"] = True
-        st.rerun()
+
 
     active_area_info = LEGAL_AREAS_CATALOG[st.session_state["active_legal_area"]]
 
-    # Expander com barra de seleção e botões para as ações da área
+    # Expander com botões e barra de seleção para as ações da área
     with st.expander(f"📌 Ações e Classes CNJ de {active_area_info['nome']}", expanded=False):
         st.caption(f"ℹ️ *{active_area_info['descricao']}*")
         action_options = active_area_info["acoes"]
-        
-        selected_action_tuple = st.selectbox(
-            f"Selecione uma ação específica da área de {active_area_info['nome']}:",
-            options=action_options,
-            format_func=lambda t: f"📌 Código {t[0]} — {t[1]}",
-            key=f"select_action_dropdown_{active_area}",
-        )
-        if selected_action_tuple:
-            chosen_code = selected_action_tuple[0]
-            current_class_code = int(st.session_state.get("classe_codigo_sidebar", 0) or 0)
-            if chosen_code != current_class_code:
-                st.session_state["classe_codigo_sidebar"] = int(chosen_code)
-                st.session_state["modo_busca_sidebar"] = "classe"
-                st.session_state["trigger_execute_search"] = True
-                st.toast(f"✅ Classe CNJ {chosen_code} selecionada!")
-                st.rerun()
 
         st.markdown("**Ações mais frequentes:**")
         action_cols = st.columns(2)
@@ -1025,6 +994,23 @@ def render_fluxo_simplificado_busca() -> None:
                 st.session_state["modo_busca_sidebar"] = "classe"
                 st.session_state["trigger_execute_search"] = True
                 st.toast(f"✅ Classe CNJ {codigo_cnj} ({nome_acao}) selecionada!")
+                st.rerun()
+
+        st.markdown("---")
+        selected_action_tuple = st.selectbox(
+            f"Selecione uma ação específica de {active_area_info['nome']}:",
+            options=action_options,
+            format_func=lambda t: f"📌 Código {t[0]} — {t[1]}",
+            key=f"select_action_dropdown_{active_area}",
+        )
+        if selected_action_tuple:
+            chosen_code = selected_action_tuple[0]
+            current_class_code = int(st.session_state.get("classe_codigo_sidebar", 0) or 0)
+            if chosen_code != current_class_code:
+                st.session_state["classe_codigo_sidebar"] = int(chosen_code)
+                st.session_state["modo_busca_sidebar"] = "classe"
+                st.session_state["trigger_execute_search"] = True
+                st.toast(f"✅ Classe CNJ {chosen_code} selecionada!")
                 st.rerun()
 
     st.markdown("---")
@@ -1144,13 +1130,19 @@ def render_fluxo_simplificado_busca() -> None:
             st.rerun()
 
     st.markdown("**Tamanho da Amostragem (Volume de Processos)**")
-    sample_size_options = [700, 2000, 10000, 20000]
+    sample_size_options = [700, 2000, 10000, 20000, 50000]
     current_sample_size = int(st.session_state.get("sample_size_sidebar", 700) or 700)
     chosen_sample_size = st.radio(
         "Selecione a profundidade da consulta:",
         options=sample_size_options,
         index=sample_size_options.index(current_sample_size) if current_sample_size in sample_size_options else 0,
-        format_func=lambda s: f"⚡ Rápido ({s} casos)" if s == 700 else (f"📊 Padrão (2.000 casos)" if s == 2000 else (f"🔍 Amplo (10.000 casos)" if s == 10000 else f"🚀 Ultra Completo (20.000 casos)")),
+        format_func=lambda s: {
+            700: "⚡ Rápido (700)",
+            2000: "📊 Padrão (2 mil)",
+            10000: "🔍 Amplo (10 mil)",
+            20000: "🚀 Completo (20 mil)",
+            50000: "🌐 Base Completa (50 mil)",
+        }.get(s, f"{s} casos"),
         horizontal=True,
         key="sample_size_radio_top",
     )
@@ -7247,33 +7239,40 @@ def render() -> None:
             transition: all 0.2s ease-in-out !important;
         }
         div[data-testid="stButton"] > button[kind="secondary"] {
-            background-color: #0F2C59 !important;
+            background-color: #1B3A6B !important;
             color: #FFFFFF !important;
-            border: 1.5px solid #D4AF37 !important;
-            box-shadow: 0 4px 10px rgba(15, 44, 89, 0.12) !important;
+            border: 2px solid rgba(212, 175, 55, 0.5) !important;
+            box-shadow: 0 4px 12px rgba(27, 58, 107, 0.35) !important;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
         }
         div[data-testid="stButton"] > button[kind="secondary"] * {
             color: #FFFFFF !important;
             font-weight: 700 !important;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
         }
         div[data-testid="stButton"] > button[kind="secondary"]:hover {
-            background-color: #1E3A8A !important;
-            border-color: #F59E0B !important;
+            background-color: #234B8A !important;
+            border-color: #F5C842 !important;
             color: #FFFFFF !important;
+            box-shadow: 0 6px 18px rgba(35, 75, 138, 0.45) !important;
+            transform: translateY(-1px) !important;
         }
         div[data-testid="stButton"] > button[kind="primary"] {
-            background: linear-gradient(135deg, #FF4B4B 0%, #D32F2F 100%) !important;
-            color: #FFFFFF !important;
-            border: 1.5px solid #B71C1C !important;
-            box-shadow: 0 6px 16px rgba(255, 75, 75, 0.4) !important;
+            background: linear-gradient(135deg, #D4AF37 0%, #B8941F 50%, #E6C84D 100%) !important;
+            color: #0D1B2A !important;
+            border: 2px solid #C5A028 !important;
+            box-shadow: 0 6px 20px rgba(212, 175, 55, 0.5) !important;
+            text-shadow: none !important;
         }
         div[data-testid="stButton"] > button[kind="primary"] * {
-            color: #FFFFFF !important;
+            color: #0D1B2A !important;
             font-weight: 800 !important;
         }
         div[data-testid="stButton"] > button[kind="primary"]:hover {
-            background: linear-gradient(135deg, #E53935 0%, #B71C1C 100%) !important;
-            color: #FFFFFF !important;
+            background: linear-gradient(135deg, #E6C84D 0%, #D4AF37 50%, #C5A028 100%) !important;
+            color: #0D1B2A !important;
+            box-shadow: 0 8px 24px rgba(212, 175, 55, 0.6) !important;
+            transform: translateY(-1px) !important;
         }
         .author-card {
             margin: 0.8rem 0 1rem;
@@ -7896,7 +7895,7 @@ def render() -> None:
 
         # 3. EXECUÇÃO
         st.markdown("**3. Execucao**")
-        size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=100)
+        size = st.number_input("Quantidade da amostra", min_value=1, max_value=MAX_TOTAL_SIZE, value=700, step=500)
         auto_url = build_url(tribunal_sigla)
         url = auto_url
         with st.expander("Ajustes avancados", expanded=False):
