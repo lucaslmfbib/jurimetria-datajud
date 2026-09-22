@@ -830,6 +830,128 @@ def render_acoes_por_area_selector(key_prefix: str = "main") -> None:
             st.rerun()
 
 
+ALL_TRIBUNALS_MAP: dict[str, str] = {
+    "todos": "🇧🇷 TODOS OS TRIBUNAIS DO PAÍS (Panorama Nacional Agregado)",
+    "tjmg": "TJMG - Tribunal de Justiça de Minas Gerais",
+    "tjsp": "TJSP - Tribunal de Justiça de São Paulo",
+    "tjrj": "TJRJ - Tribunal de Justiça do Rio de Janeiro",
+    "tjba": "TJBA - Tribunal de Justiça da Bahia",
+    "tjpr": "TJPR - Tribunal de Justiça do Paraná",
+    "tjrs": "TJRS - Tribunal de Justiça do Rio Grande do Sul",
+    "tjsc": "TJSC - Tribunal de Justiça de Santa Catarina",
+    "tjpe": "TJPE - Tribunal de Justiça de Pernambuco",
+    "tjce": "TJCE - Tribunal de Justiça do Ceará",
+    "tjgo": "TJGO - Tribunal de Justiça de Goiás",
+    "tjdft": "TJDFT - Tribunal de Justiça do DF e Territórios",
+    "tjma": "TJMA - Tribunal de Justiça do Maranhão",
+    "tjpa": "TJPA - Tribunal de Justiça do Pará",
+    "tjpb": "TJPB - Tribunal de Justiça da Paraíba",
+    "tjrn": "TJRN - Tribunal de Justiça do Rio Grande do Norte",
+    "tjal": "TJAL - Tribunal de Justiça de Alagoas",
+    "tjam": "TJAM - Tribunal de Justiça do Amazonas",
+    "tjap": "TJAP - Tribunal de Justiça do Amapá",
+    "tjes": "TJES - Tribunal de Justiça do Espírito Santo",
+    "tjms": "TJMS - Tribunal de Justiça de Mato Grosso do Sul",
+    "tjmt": "TJMT - Tribunal de Justiça de Mato Grosso",
+    "tjpi": "TJPI - Tribunal de Justiça do Piauí",
+    "tjro": "TJRO - Tribunal de Justiça de Rondônia",
+    "tjrr": "TJRR - Tribunal de Justiça de Roraima",
+    "tjto": "TJTO - Tribunal de Justiça de Tocantins",
+    "trf1": "TRF1 - Tribunal Regional Federal 1ª Região (DF, GO, TO, MA, PI, BA, MG, MT, AM, AC, RO, RR, AP)",
+    "trf2": "TRF2 - Tribunal Regional Federal 2ª Região (RJ, ES)",
+    "trf3": "TRF3 - Tribunal Regional Federal 3ª Região (SP, MS)",
+    "trf4": "TRF4 - Tribunal Regional Federal 4ª Região (RS, PR, SC)",
+    "trf5": "TRF5 - Tribunal Regional Federal 5ª Região (PE, CE, AL, SE, PB, RN)",
+    "trf6": "TRF6 - Tribunal Regional Federal 6ª Região (MG)",
+    "trt1": "TRT1 - TRT 1ª Região (Rio de Janeiro)",
+    "trt2": "TRT2 - TRT 2ª Região (São Paulo - Capital)",
+    "trt3": "TRT3 - TRT 3ª Região (Minas Gerais)",
+    "trt4": "TRT4 - TRT 4ª Região (Rio Grande do Sul)",
+    "trt5": "TRT5 - TRT 5ª Região (Bahia)",
+    "trt6": "TRT6 - TRT 6ª Região (Pernambuco)",
+    "trt7": "TRT7 - TRT 7ª Região (Ceará)",
+    "trt8": "TRT8 - TRT 8ª Região (Pará/Amapá)",
+    "trt9": "TRT9 - TRT 9ª Região (Paraná)",
+    "trt10": "TRT10 - TRT 10ª Região (DF/Tocantins)",
+    "trt11": "TRT11 - TRT 11ª Região (Amazonas/Roraima)",
+    "trt12": "TRT12 - TRT 12ª Região (Santa Catarina)",
+    "trt13": "TRT13 - TRT 13ª Região (Paraíba)",
+    "trt14": "TRT14 - TRT 14ª Região (Rondônia/Acre)",
+    "trt15": "TRT15 - TRT 15ª Região (Campinas/SP)",
+    "trt16": "TRT16 - TRT 16ª Região (Maranhão)",
+    "trt17": "TRT17 - TRT 17ª Região (Espírito Santo)",
+    "trt18": "TRT18 - TRT 18ª Região (Goiás)",
+    "trt19": "TRT19 - TRT 19ª Região (Alagoas)",
+    "trt20": "TRT20 - TRT 20ª Região (Sergipe)",
+    "trt21": "TRT21 - TRT 21ª Região (Rio Grande do Norte)",
+    "trt22": "TRT22 - TRT 22ª Região (Piauí)",
+    "trt23": "TRT23 - TRT 23ª Região (Mato Grosso)",
+    "trt24": "TRT24 - TRT 24ª Região (Mato Grosso do Sul)",
+    "stj": "STJ - Superior Tribunal de Justiça",
+    "tst": "TST - Tribunal Superior do Trabalho",
+    "tse": "TSE - Tribunal Superior Eleitoral",
+    "stm": "STM - Superior Tribunal Militar",
+    "tjmmg": "TJMMG - Justiça Militar de MG",
+    "tjmrs": "TJMRS - Justiça Militar do RS",
+    "tjmsp": "TJMSP - Justiça Militar de SP",
+}
+
+
+def render_top_tribunal_selector() -> None:
+    st.markdown("### 🏛️ Seleção de Tribunal e Geração de Gráficos")
+    st.caption("Escolha o tribunal abaixo (ou selecione **'Todos os Tribunais do País'** para o panorama nacional) e clique para carregar os gráficos:")
+
+    top_quick_tribunals = [
+        ("todos", "🇧🇷 Todos os Tribunais"),
+        ("tjmg", "🏛️ TJMG"),
+        ("tjsp", "🏛️ TJSP"),
+        ("tjrj", "🏛️ TJRJ"),
+        ("trf1", "⚖️ TRF1"),
+        ("trt3", "👔 TRT3"),
+        ("stj", "🏛️ STJ"),
+        ("tst", "👔 TST"),
+    ]
+
+    current_tribunal = str(st.session_state.get("tribunal_sigla_sidebar", "tjmg") or "tjmg").strip().lower()
+
+    quick_cols = st.columns(len(top_quick_tribunals))
+    for idx, (sigla_code, sigla_label) in enumerate(top_quick_tribunals):
+        q_col = quick_cols[idx]
+        is_active = (current_tribunal == sigla_code)
+        if q_col.button(
+            sigla_label,
+            key=f"top_quick_tribunal_btn_{sigla_code}_{idx}",
+            type="primary" if is_active else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["tribunal_sigla_sidebar"] = sigla_code
+            st.rerun()
+
+    all_tribunal_keys = list(ALL_TRIBUNALS_MAP.keys())
+    current_index = all_tribunal_keys.index(current_tribunal) if current_tribunal in all_tribunal_keys else 1
+
+    selected_tribunal_from_dropdown = st.selectbox(
+        "Selecione na lista completa de tribunais do Brasil (~60 tribunais):",
+        options=all_tribunal_keys,
+        index=current_index,
+        format_func=lambda k: ALL_TRIBUNALS_MAP[k],
+        key="main_top_tribunal_select_dropdown",
+    )
+
+    if selected_tribunal_from_dropdown != current_tribunal:
+        st.session_state["tribunal_sigla_sidebar"] = selected_tribunal_from_dropdown
+        st.rerun()
+
+    btn_exec_col1, btn_exec_col2 = st.columns([3, 1])
+    with btn_exec_col1:
+        if st.button("🚀 Gerar Gráficos e Analisar no DataJud", type="primary", use_container_width=True, key="btn_exec_main_top"):
+            st.session_state["trigger_execute_search"] = True
+            st.rerun()
+    with btn_exec_col2:
+        selected_name = ALL_TRIBUNALS_MAP.get(current_tribunal, current_tribunal.upper())
+        st.caption(f"Tribunal selecionado:\n**{selected_name}**")
+
+
 def get_estrutura_options(tribunal_sigla: str) -> dict[str, Any]:
     tribunal = normalize_tribunal_sigla(tribunal_sigla)
     opcoes_base = ["Todos"]
@@ -7235,7 +7357,9 @@ def render() -> None:
     )
     api_key = resolve_api_key()
 
-    # BOTÃO / PAINEL SUPERIOR DA TELA INICIAL (FORA DA BARRA LATERAL)
+    # SELEÇÃO DE TRIBUNAL & EXECUÇÃO DE BUSCA NA TELA PRINCIPAL (FORA DA BARRA LATERAL)
+    render_top_tribunal_selector()
+
     with st.expander("📂 **Buscar Ações por Área do Direito** (Consumidor, Penal, Cível, Trabalhista, Tributário, Família...)", expanded=False):
         render_acoes_por_area_selector(key_prefix="top_main")
 
