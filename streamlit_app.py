@@ -897,19 +897,68 @@ ALL_TRIBUNALS_MAP: dict[str, str] = {
 }
 
 
-def render_top_tribunal_selector() -> None:
-    st.markdown("### 🏛️ Seleção de Tribunal e Geração de Gráficos")
-    st.caption("Escolha o tribunal abaixo (ou selecione **'Todos os Tribunais do País'** para o panorama nacional) e clique para carregar os gráficos:")
+def render_fluxo_simplificado_busca() -> None:
+    st.markdown("### 🔍 Pesquisa Rápida de Jurimetria")
+    st.caption("1º Escolha a Área do Direito ➡️ 2º Clique no Tribunal. Os gráficos e estatísticas são gerados automaticamente abaixo!")
 
+    # 1. ESCOLHA A ÁREA DO DIREITO
+    area_keys = list(LEGAL_AREAS_CATALOG.keys())
+    if "active_legal_area" not in st.session_state:
+        st.session_state["active_legal_area"] = "consumidor"
+    active_area = st.session_state["active_legal_area"]
+
+    st.markdown("**1º Passo — Selecione a Área do Direito:**")
+    area_cols = st.columns(min(len(area_keys), 5))
+    for i, area_key in enumerate(area_keys):
+        col = area_cols[i % 5]
+        area_meta = LEGAL_AREAS_CATALOG[area_key]
+        is_selected = (active_area == area_key)
+        label = f"{area_meta['icone']} {area_meta['nome']}"
+        if col.button(
+            label,
+            key=f"fluxo_area_btn_{area_key}",
+            type="primary" if is_selected else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["active_legal_area"] = area_key
+            first_class_code = area_meta["acoes"][0][0]
+            st.session_state["classe_codigo_sidebar"] = int(first_class_code)
+            st.session_state["modo_busca_sidebar"] = "classe"
+            st.session_state["trigger_execute_search"] = True
+            st.rerun()
+
+    active_area_info = LEGAL_AREAS_CATALOG[st.session_state["active_legal_area"]]
+
+    # Expander discreto para escolher uma ação específica da área
+    with st.expander(f"📌 Ver ações mais frequentes de {active_area_info['nome']} (opcional)", expanded=False):
+        st.caption(f"ℹ️ *{active_area_info['descricao']}*")
+        action_cols = st.columns(2)
+        for idx, (codigo_cnj, nome_acao) in enumerate(active_area_info["acoes"]):
+            a_col = action_cols[idx % 2]
+            btn_label = f"📌 `{codigo_cnj}` - {nome_acao}"
+            if a_col.button(
+                btn_label,
+                key=f"fluxo_action_btn_{active_area}_{codigo_cnj}_{idx}",
+                use_container_width=True,
+            ):
+                st.session_state["classe_codigo_sidebar"] = int(codigo_cnj)
+                st.session_state["modo_busca_sidebar"] = "classe"
+                st.session_state["trigger_execute_search"] = True
+                st.toast(f"✅ Classe CNJ {codigo_cnj} ({nome_acao}) selecionada!")
+                st.rerun()
+
+    st.markdown("---")
+
+    # 2. ESCOLHA O TRIBUNAL (LOGO ABAIXO)
+    st.markdown("**2º Passo — Escolha o Tribunal (ou Todos os Tribunais do País):**")
     top_quick_tribunals = [
-        ("todos", "🇧🇷 Todos os Tribunais"),
         ("tjmg", "🏛️ TJMG"),
         ("tjsp", "🏛️ TJSP"),
         ("tjrj", "🏛️ TJRJ"),
         ("trf1", "⚖️ TRF1"),
         ("trt3", "👔 TRT3"),
         ("stj", "🏛️ STJ"),
-        ("tst", "👔 TST"),
+        ("todos", "🇧🇷 Todos os Tribunais do País"),
     ]
 
     current_tribunal = str(st.session_state.get("tribunal_sigla_sidebar", "tjmg") or "tjmg").strip().lower()
@@ -920,36 +969,32 @@ def render_top_tribunal_selector() -> None:
         is_active = (current_tribunal == sigla_code)
         if q_col.button(
             sigla_label,
-            key=f"top_quick_tribunal_btn_{sigla_code}_{idx}",
+            key=f"fluxo_tribunal_btn_{sigla_code}_{idx}",
             type="primary" if is_active else "secondary",
             use_container_width=True,
         ):
             st.session_state["tribunal_sigla_sidebar"] = sigla_code
+            st.session_state["trigger_execute_search"] = True
             st.rerun()
 
+    # Dropdown de todos os ~60 tribunais
     all_tribunal_keys = list(ALL_TRIBUNALS_MAP.keys())
     current_index = all_tribunal_keys.index(current_tribunal) if current_tribunal in all_tribunal_keys else 1
 
     selected_tribunal_from_dropdown = st.selectbox(
-        "Selecione na lista completa de tribunais do Brasil (~60 tribunais):",
+        "Outros tribunais do Brasil (~60 opções):",
         options=all_tribunal_keys,
         index=current_index,
         format_func=lambda k: ALL_TRIBUNALS_MAP[k],
-        key="main_top_tribunal_select_dropdown",
+        key="fluxo_tribunal_select_dropdown",
     )
 
     if selected_tribunal_from_dropdown != current_tribunal:
         st.session_state["tribunal_sigla_sidebar"] = selected_tribunal_from_dropdown
+        st.session_state["trigger_execute_search"] = True
         st.rerun()
 
-    btn_exec_col1, btn_exec_col2 = st.columns([3, 1])
-    with btn_exec_col1:
-        if st.button("🚀 Gerar Gráficos e Analisar no DataJud", type="primary", use_container_width=True, key="btn_exec_main_top"):
-            st.session_state["trigger_execute_search"] = True
-            st.rerun()
-    with btn_exec_col2:
-        selected_name = ALL_TRIBUNALS_MAP.get(current_tribunal, current_tribunal.upper())
-        st.caption(f"Tribunal selecionado:\n**{selected_name}**")
+    st.markdown("---")
 
 
 def get_estrutura_options(tribunal_sigla: str) -> dict[str, Any]:
@@ -7357,11 +7402,8 @@ def render() -> None:
     )
     api_key = resolve_api_key()
 
-    # SELEÇÃO DE TRIBUNAL & EXECUÇÃO DE BUSCA NA TELA PRINCIPAL (FORA DA BARRA LATERAL)
-    render_top_tribunal_selector()
-
-    with st.expander("📂 **Buscar Ações por Área do Direito** (Consumidor, Penal, Cível, Trabalhista, Tributário, Família...)", expanded=False):
-        render_acoes_por_area_selector(key_prefix="top_main")
+    # FLUXO UNIFICADO DA TELA INICIAL: 1º PASSO ÁREA -> 2º PASSO TRIBUNAL -> GRÁFICOS AUTOMÁTICOS
+    render_fluxo_simplificado_busca()
 
     with st.sidebar:
         # 1. PESQUISA (PRIMEIRA SEÇÃO DA BARRA LATERAL)
@@ -7695,7 +7737,14 @@ def render() -> None:
                 "Acima de 10.000 registros, o app pagina automaticamente a consulta no DataJud. "
                 "Isso pode deixar a resposta mais lenta."
             )
-        executar = st.button("Buscar no DataJud", use_container_width=True)
+        executar_sidebar = st.button("Buscar no DataJud", use_container_width=True)
+        trigger_exec = st.session_state.pop("trigger_execute_search", False)
+        has_df = isinstance(st.session_state.get("df_anpp"), pd.DataFrame) and not st.session_state.get("df_anpp").empty
+        auto_initial_run = not has_df and "initial_search_done" not in st.session_state
+        if auto_initial_run:
+            st.session_state["initial_search_done"] = True
+
+        executar = executar_sidebar or trigger_exec or auto_initial_run
         if size > 2000:
             st.warning("Consultas acima de 2000 podem ficar lentas.")
 
