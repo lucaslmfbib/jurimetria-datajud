@@ -961,6 +961,7 @@ def render_fluxo_simplificado_busca() -> None:
             key=f"fluxo_area_btn_{area_key}",
             type="primary" if is_selected else "secondary",
             use_container_width=True,
+            help=f"Área do Direito: {area_meta['nome']} — {area_meta['descricao']}",
         ):
             st.session_state["active_legal_area"] = area_key
             first_class_code = area_meta["acoes"][0][0]
@@ -1018,6 +1019,7 @@ def render_fluxo_simplificado_busca() -> None:
                 btn_label,
                 key=f"fluxo_action_btn_{active_area}_{codigo_cnj}_{idx}",
                 use_container_width=True,
+                help=f"Código CNJ {codigo_cnj} — {nome_acao}",
             ):
                 st.session_state["classe_codigo_sidebar"] = int(codigo_cnj)
                 st.session_state["modo_busca_sidebar"] = "classe"
@@ -1045,11 +1047,13 @@ def render_fluxo_simplificado_busca() -> None:
     for idx, (sigla_code, sigla_label) in enumerate(top_quick_tribunals):
         q_col = quick_cols[idx]
         is_active = (current_tribunal == sigla_code)
+        trib_name_full = ALL_TRIBUNALS_MAP.get(sigla_code, sigla_code.upper())
         if q_col.button(
             sigla_label,
             key=f"fluxo_tribunal_btn_{sigla_code}_{idx}",
             type="primary" if is_active else "secondary",
             use_container_width=True,
+            help=f"Tribunal: {trib_name_full}",
         ):
             st.session_state["tribunal_sigla_sidebar"] = sigla_code
             st.session_state["trigger_execute_search"] = True
@@ -5260,7 +5264,7 @@ def format_int_br(value: Any) -> str:
         return str(value)
 
 
-def shorten_display_label(value: Any, max_chars: int = 36) -> str:
+def shorten_display_label(value: Any, max_chars: int = 80) -> str:
     text = str(value or "").strip()
     if not text or len(text) <= max_chars:
         return text
@@ -11049,45 +11053,50 @@ def render() -> None:
             "Aqui ficam os sinais mais importantes da amostra para o usuario entender rapidamente o recorte antes de entrar nas outras areas."
         )
         pi1, pi2, pi3, pi4, pi5 = st.columns(5)
-        pi1.metric("Classe lider", top_classe_nome, delta=f"{top_classe_qtd} processos" if top_classe_qtd else None)
-        pi2.metric("Tema lider", top_assunto_nome, delta=f"{top_assunto_qtd} ocorrencias" if top_assunto_qtd else None)
-        pi3.metric("Orgao lider", top_orgao_nome, delta=top_orgao_part or None)
+        top_classe_full = str(top_classes_overview.iloc[0]["classe"]) if not top_classes_overview.empty else "Sem base"
+        top_assunto_full = str(top_assuntos_overview.iloc[0]["assunto"]) if not top_assuntos_overview.empty else "Sem base"
+        top_orgao_full = str(top_orgaos_overview.iloc[0]["orgao_julgador"]) if not top_orgaos_overview.empty else "Sem base"
+
+        pi1.metric("Classe líder", top_classe_nome, delta=f"{top_classe_qtd} processos" if top_classe_qtd else None, help=f"Classe Líder: {top_classe_full}")
+        pi2.metric("Tema líder", top_assunto_nome, delta=f"{top_assunto_qtd} ocorrências" if top_assunto_qtd else None, help=f"Tema Líder: {top_assunto_full}")
+        pi3.metric("Órgão líder", top_orgao_nome, delta=top_orgao_part or None, help=f"Órgão Julgador Líder: {top_orgao_full}")
         if int(valor_causa_info.get("com_valor", 0) or 0) > 0:
-            pi4.metric("Mediana valor da causa", format_currency_br(valor_causa_info.get("mediana")))
+            pi4.metric("Mediana valor da causa", format_currency_br(valor_causa_info.get("mediana")), help="Mediana do valor da causa na amostragem")
         else:
             pi4.metric("Mediana valor da causa", "Sem dados")
-        pi5.metric("Pico mensal", pico_mensal)
+        pi5.metric("Pico mensal", pico_mensal, help=f"Pico de ajuizamentos na série histórica: {pico_mensal}")
 
         if isinstance(decision_overview, dict):
             d1, d2, d3, d4 = st.columns(4)
             desfecho_lider_overview = str(decision_overview.get("desfecho_lider", "") or "").strip()
             desfecho_lider_card = (
-                "Nao classificado"
+                "Não classificado"
                 if desfecho_lider_overview == CATEGORIA_NAO_CLASSIFICADA
-                else shorten_display_label(desfecho_lider_overview or "Sem base", max_chars=28)
+                else shorten_display_label(desfecho_lider_overview or "Sem base", max_chars=80)
             )
             desfecho_lider_delta = (
                 f"{format_int_br(int(decision_overview.get('desfecho_lider_qtd', 0) or 0))} casos"
                 if desfecho_lider_overview
                 else None
             )
+            movimento_lider_raw = str(decision_overview.get("movimento_lider", "") or "").strip()
             movimento_lider_card = shorten_display_label(
-                str(decision_overview.get("movimento_lider", "") or "").strip() or "Sem base",
-                max_chars=28,
+                movimento_lider_raw or "Sem base",
+                max_chars=80,
             )
             movimento_lider_delta = (
-                f"{format_int_br(int(decision_overview.get('movimento_lider_qtd', 0) or 0))} ocorrencias"
-                if str(decision_overview.get("movimento_lider", "") or "").strip()
+                f"{format_int_br(int(decision_overview.get('movimento_lider_qtd', 0) or 0))} ocorrências"
+                if movimento_lider_raw
                 else None
             )
             cobertura_desfecho = float(decision_overview["cobertura"].get("cobertura_desfecho", 0.0) or 0.0)
             favorabilidade_overview = str(
                 decision_overview["favorabilidade"].get("leitura_favorabilidade", "Sem base")
             )
-            d1.metric("Desfecho lider", desfecho_lider_card, delta=desfecho_lider_delta)
-            d2.metric("Cobertura de desfecho", f"{cobertura_desfecho:.1f}%")
-            d3.metric("Movimento decisorio lider", movimento_lider_card, delta=movimento_lider_delta)
-            d4.metric("Favorabilidade estimada", favorabilidade_overview)
+            d1.metric("Desfecho líder", desfecho_lider_card, delta=desfecho_lider_delta, help=f"Desfecho Líder: {desfecho_lider_overview or 'Sem base'}")
+            d2.metric("Cobertura de desfecho", f"{cobertura_desfecho:.1f}%", help="Percentual de processos com desfecho classificado")
+            d3.metric("Movimento decisório líder", movimento_lider_card, delta=movimento_lider_delta, help=f"Movimento Decisório Líder: {movimento_lider_raw or 'Sem base'}")
+            d4.metric("Favorabilidade estimada", favorabilidade_overview, help=f"Favorabilidade estimada: {favorabilidade_overview}")
             st.caption(
                 "Esses sinais usam a camada de leitura decisoria complementar. "
                 "Quando ela nao estiver carregada, o app volta a priorizar classes, temas e volume da amostra."
