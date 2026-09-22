@@ -8039,307 +8039,307 @@ def render() -> None:
     render_fluxo_simplificado_busca()
 
     with st.sidebar:
-        # 1. PESQUISA (PRIMEIRA SEÇÃO DA BARRA LATERAL)
-        st.markdown("**1. Pesquisa**")
-        modo_busca_sidebar = st.radio(
-            "Modo de busca",
-            options=["classe", "tema", "processo", "parte", "livre"],
-            format_func=format_modo_busca_option,
-            help="Escolha como voce quer montar a consulta.",
-        )
-
-        tribunal_sigla_pre = str(st.session_state.get("tribunal_sigla_sidebar", "tjmg") or "tjmg").strip().lower()
-        estrutura_filtro_pre = str(st.session_state.get("estrutura_filtro_sidebar", "Todos") or "Todos").strip()
-
-        if "classe_codigo_sidebar" not in st.session_state:
-            st.session_state["classe_codigo_sidebar"] = 12729
-        classe_codigo = int(st.session_state.get("classe_codigo_sidebar", 12729) or 12729)
-
-        numero_processo = ""
-        nome_parte = ""
-        cpf_cnpj = ""
-        texto_livre = ""
-        tema_consulta = ""
-
-        # CAMPOS DINÂMICOS CONFORME O MODO SELECIONADO (LOGO ABAIXO DO RADIO DE MODO DE BUSCA)
-        if modo_busca_sidebar == "classe":
-            classe_codigo = int(
-                st.number_input(
-                    "Classe processual (codigo CNJ)",
-                    min_value=1,
-                    step=1,
-                    key="classe_codigo_sidebar",
-                    help="Codigo CNJ do tipo de processo ou recurso.",
-                )
-            )
-            with st.expander("Codigos sugeridos", expanded=False):
-                render_codigo_sugestoes(tribunal_sigla_pre)
-
-        elif modo_busca_sidebar == "processo":
-            numero_processo = st.text_input(
-                "Numero do processo",
-                key="numero_processo_sidebar",
-                placeholder="Ex.: 50012345620248130024",
-                help="Consulta o caso exato.",
+        # 1. BUSCA AVANÇADA (SEÇÃO SANFONA NA BARRA LATERAL, COMEÇA FECHADA)
+        with st.expander("🔍 1. Busca Avançada", expanded=False):
+            modo_busca_sidebar = st.radio(
+                "Modo de busca",
+                options=["classe", "tema", "processo", "parte", "livre"],
+                format_func=format_modo_busca_option,
+                help="Escolha como voce quer montar a consulta.",
             )
 
-        # PERÍODO DE AJUIZAMENTO (APLICÁVEL SE NÃO FOR NÚMERO DE PROCESSO)
-        aplicar_periodo = False
-        data_inicio = None
-        data_fim = None
-        if modo_busca_sidebar != "processo":
-            aplicar_periodo = st.checkbox(
-                "Filtrar por periodo de ajuizamento",
-                value=False,
-                help="Limita a busca a um intervalo de ajuizamento.",
-            )
-        if aplicar_periodo:
-            hoje = date.today()
-            inicio_padrao = date(hoje.year, 1, 1)
-            col_data_inicio, col_data_fim = st.columns(2)
-            with col_data_inicio:
-                data_inicio = st.date_input(
-                    "Data inicial",
-                    value=inicio_padrao,
-                )
-            with col_data_fim:
-                data_fim = st.date_input(
-                    "Data final",
-                    value=hoje,
-                )
-            periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
-            if periodo_legivel:
-                st.caption(f"Periodo aplicado: {periodo_legivel}")
+            tribunal_sigla_pre = str(st.session_state.get("tribunal_sigla_sidebar", "tjmg") or "tjmg").strip().lower()
+            estrutura_filtro_pre = str(st.session_state.get("estrutura_filtro_sidebar", "Todos") or "Todos").strip()
 
-        usar_numero_processo_sidebar = modo_busca_sidebar == "processo"
+            if "classe_codigo_sidebar" not in st.session_state:
+                st.session_state["classe_codigo_sidebar"] = 12729
+            classe_codigo = int(st.session_state.get("classe_codigo_sidebar", 12729) or 12729)
 
-        tema_cache_key = build_theme_suggestion_cache_key(
-            tribunal_sigla=tribunal_sigla_pre,
-            classe_codigo=classe_codigo,
-            estrutura_filtro=estrutura_filtro_pre,
-            data_inicio=data_inicio if aplicar_periodo else None,
-            data_fim=data_fim if aplicar_periodo else None,
-        )
-        tema_sugestoes_key = "tema_sugestoes_df"
-        tema_sugestoes_status_key = "tema_sugestoes_status"
-        tema_sugestoes_cache_key = "tema_sugestoes_cache_key"
-        if st.session_state.get(tema_sugestoes_cache_key) != tema_cache_key:
-            st.session_state[tema_sugestoes_cache_key] = tema_cache_key
-            st.session_state[tema_sugestoes_key] = pd.DataFrame(columns=["assunto", "quantidade"])
-            st.session_state[tema_sugestoes_status_key] = ""
-            st.session_state["tema_consulta_select"] = ""
-            st.session_state["tema_consulta_text_fallback"] = ""
-            st.session_state["tema_consulta_busca_local"] = ""
+            numero_processo = ""
+            nome_parte = ""
+            cpf_cnpj = ""
+            texto_livre = ""
+            tema_consulta = ""
 
-        tema_sugestoes_df = st.session_state.get(tema_sugestoes_key, pd.DataFrame(columns=["assunto", "quantidade"]))
-        tema_sugestoes_status = str(st.session_state.get(tema_sugestoes_status_key, ""))
-        tema_sugestoes_erro = ""
-
-        tema_sugestoes = (
-            tema_sugestoes_df["assunto"].dropna().astype(str).str.strip().tolist()
-            if not tema_sugestoes_df.empty
-            else []
-        )
-        tema_sugestoes = [tema for tema in tema_sugestoes if tema]
-        tema_select_key = "tema_consulta_select"
-        tema_text_key = "tema_consulta_text_fallback"
-        tema_busca_key = "tema_consulta_busca_local"
-        if tema_text_key not in st.session_state:
-            st.session_state[tema_text_key] = ""
-        if tema_busca_key not in st.session_state:
-            st.session_state[tema_busca_key] = ""
-        if tema_select_key not in st.session_state:
-            st.session_state[tema_select_key] = ""
-        tema_atual_sidebar = normalize_assunto_filtro(
-            st.session_state.get(tema_text_key, "")
-            or st.session_state.get(tema_select_key, "")
-        )
-        tema_consulta = tema_atual_sidebar if modo_busca_sidebar in {"classe", "tema"} else ""
-        busca_tema_direto_sidebar = modo_busca_sidebar == "tema"
-
-        if usar_numero_processo_sidebar:
-            pass
-        elif modo_busca_sidebar == "tema":
-            tema_consulta = normalize_assunto_filtro(
-                st.text_input(
-                    "Tema principal",
-                    key=tema_text_key,
-                    placeholder="Ex.: plano de saude, consumidor, servidor publico",
-                    help="Use o assunto como filtro principal.",
-                )
-            )
-        elif modo_busca_sidebar == "parte":
-            nome_parte = normalize_party_name(
-                st.text_input(
-                    "Nome da pessoa ou empresa",
-                    key="nome_parte_sidebar",
-                    placeholder="Ex.: Joao da Silva, Municipio de Belo Horizonte, Banco X",
-                    help="Busca o nome em campos publicos de partes, envolvidos e participantes.",
-                )
-            )
-            cpf_cnpj = normalize_document_search_value(
-                st.text_input(
-                    "CPF/CNPJ",
-                    key="cpf_cnpj_sidebar",
-                    placeholder="Ex.: 12345678900",
-                    help="Tenta conferir documento quando o tribunal expoe esse dado.",
-                )
-            )
-            texto_livre = normalize_free_text_query(
-                st.text_input(
-                    "Palavra-chave adicional",
-                    key="texto_livre_parte_sidebar",
-                    placeholder="Ex.: liminar, improbidade, execucao fiscal",
-                    help="Ajuda a restringir a busca por parte a um contexto processual mais especifico.",
-                )
-            )
-            with st.expander("Nota sobre CPF/CNPJ", expanded=False):
-                st.caption(
-                    "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe e indexa no endpoint publico."
-                )
-        elif modo_busca_sidebar == "livre":
-            texto_livre = normalize_free_text_query(
-                st.text_input(
-                    "Palavra-chave principal",
-                    key="texto_livre_sidebar",
-                    placeholder="Ex.: dano moral telefonia liminar, improbidade, cumprimento de sentenca",
-                    help="Busca ampla em campos publicos relevantes da capa e da movimentacao.",
-                )
-            )
-            tema_consulta = normalize_assunto_filtro(
-                st.text_input(
-                    "Tema exato",
-                    key="tema_livre_sidebar",
-                    placeholder="Ex.: consumidor, saude suplementar",
-                    help="Se quiser, combine a palavra-chave com um assunto exato do DataJud.",
-                )
-            )
-        else:
-            tema_consulta = normalize_assunto_filtro(
-                st.text_input(
-                    "Tema",
-                    key=tema_text_key,
-                    placeholder="Digite um tema para refinar a classe processual",
-                    help="Use para afunilar a classe por assunto.",
-                )
-            )
-            if st.button(
-                "Mostrar temas da classe",
-                key="carregar_temas_codigo_sigla",
-                use_container_width=True,
-            ):
-                temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
-                if current_query_can_seed_theme_suggestions(
-                    classe_codigo=classe_codigo,
-                    tribunal_sigla=tribunal_sigla_pre,
-                    estrutura_filtro=estrutura_filtro_pre,
-                    data_inicio=data_inicio if aplicar_periodo else None,
-                    data_fim=data_fim if aplicar_periodo else None,
-                ):
-                    temas_da_consulta_atual = build_theme_suggestions_from_current_query()
-                if not temas_da_consulta_atual.empty:
-                    st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
-                    st.session_state[tema_sugestoes_status_key] = (
-                        f"Usei a consulta atual para montar {format_int_br(len(temas_da_consulta_atual))} sugestoes."
+            # CAMPOS DINÂMICOS CONFORME O MODO SELECIONADO (LOGO ABAIXO DO RADIO DE MODO DE BUSCA)
+            if modo_busca_sidebar == "classe":
+                classe_codigo = int(
+                    st.number_input(
+                        "Classe processual (codigo CNJ)",
+                        min_value=1,
+                        step=1,
+                        key="classe_codigo_sidebar",
+                        help="Codigo CNJ do tipo de processo ou recurso.",
                     )
-                    st.rerun()
-                with st.spinner("Carregando temas sugeridos..."):
-                    try:
-                        tema_sugestoes_df = fetch_theme_suggestions_dataframe(
-                            api_key=api_key,
-                            classe_codigo=int(classe_codigo),
-                            url=build_url(tribunal_sigla_pre),
-                            tribunal_sigla=tribunal_sigla_pre,
-                            estrutura_filtro=estrutura_filtro_pre,
-                            data_inicio=data_inicio if aplicar_periodo else None,
-                            data_fim=data_fim if aplicar_periodo else None,
+                )
+                with st.expander("Codigos sugeridos", expanded=False):
+                    render_codigo_sugestoes(tribunal_sigla_pre)
+
+            elif modo_busca_sidebar == "processo":
+                numero_processo = st.text_input(
+                    "Numero do processo",
+                    key="numero_processo_sidebar",
+                    placeholder="Ex.: 50012345620248130024",
+                    help="Consulta o caso exato.",
+                )
+
+            # PERÍODO DE AJUIZAMENTO (APLICÁVEL SE NÃO FOR NÚMERO DE PROCESSO)
+            aplicar_periodo = False
+            data_inicio = None
+            data_fim = None
+            if modo_busca_sidebar != "processo":
+                aplicar_periodo = st.checkbox(
+                    "Filtrar por periodo de ajuizamento",
+                    value=False,
+                    help="Limita a busca a um intervalo de ajuizamento.",
+                )
+            if aplicar_periodo:
+                hoje = date.today()
+                inicio_padrao = date(hoje.year, 1, 1)
+                col_data_inicio, col_data_fim = st.columns(2)
+                with col_data_inicio:
+                    data_inicio = st.date_input(
+                        "Data inicial",
+                        value=inicio_padrao,
+                    )
+                with col_data_fim:
+                    data_fim = st.date_input(
+                        "Data final",
+                        value=hoje,
+                    )
+                periodo_legivel = format_periodo_aplicado(data_inicio, data_fim)
+                if periodo_legivel:
+                    st.caption(f"Periodo aplicado: {periodo_legivel}")
+
+            usar_numero_processo_sidebar = modo_busca_sidebar == "processo"
+
+            tema_cache_key = build_theme_suggestion_cache_key(
+                tribunal_sigla=tribunal_sigla_pre,
+                classe_codigo=classe_codigo,
+                estrutura_filtro=estrutura_filtro_pre,
+                data_inicio=data_inicio if aplicar_periodo else None,
+                data_fim=data_fim if aplicar_periodo else None,
+            )
+            tema_sugestoes_key = "tema_sugestoes_df"
+            tema_sugestoes_status_key = "tema_sugestoes_status"
+            tema_sugestoes_cache_key = "tema_sugestoes_cache_key"
+            if st.session_state.get(tema_sugestoes_cache_key) != tema_cache_key:
+                st.session_state[tema_sugestoes_cache_key] = tema_cache_key
+                st.session_state[tema_sugestoes_key] = pd.DataFrame(columns=["assunto", "quantidade"])
+                st.session_state[tema_sugestoes_status_key] = ""
+                st.session_state["tema_consulta_select"] = ""
+                st.session_state["tema_consulta_text_fallback"] = ""
+                st.session_state["tema_consulta_busca_local"] = ""
+
+            tema_sugestoes_df = st.session_state.get(tema_sugestoes_key, pd.DataFrame(columns=["assunto", "quantidade"]))
+            tema_sugestoes_status = str(st.session_state.get(tema_sugestoes_status_key, ""))
+            tema_sugestoes_erro = ""
+
+            tema_sugestoes = (
+                tema_sugestoes_df["assunto"].dropna().astype(str).str.strip().tolist()
+                if not tema_sugestoes_df.empty
+                else []
+            )
+            tema_sugestoes = [tema for tema in tema_sugestoes if tema]
+            tema_select_key = "tema_consulta_select"
+            tema_text_key = "tema_consulta_text_fallback"
+            tema_busca_key = "tema_consulta_busca_local"
+            if tema_text_key not in st.session_state:
+                st.session_state[tema_text_key] = ""
+            if tema_busca_key not in st.session_state:
+                st.session_state[tema_busca_key] = ""
+            if tema_select_key not in st.session_state:
+                st.session_state[tema_select_key] = ""
+            tema_atual_sidebar = normalize_assunto_filtro(
+                st.session_state.get(tema_text_key, "")
+                or st.session_state.get(tema_select_key, "")
+            )
+            tema_consulta = tema_atual_sidebar if modo_busca_sidebar in {"classe", "tema"} else ""
+            busca_tema_direto_sidebar = modo_busca_sidebar == "tema"
+
+            if usar_numero_processo_sidebar:
+                pass
+            elif modo_busca_sidebar == "tema":
+                tema_consulta = normalize_assunto_filtro(
+                    st.text_input(
+                        "Tema principal",
+                        key=tema_text_key,
+                        placeholder="Ex.: plano de saude, consumidor, servidor publico",
+                        help="Use o assunto como filtro principal.",
+                    )
+                )
+            elif modo_busca_sidebar == "parte":
+                nome_parte = normalize_party_name(
+                    st.text_input(
+                        "Nome da pessoa ou empresa",
+                        key="nome_parte_sidebar",
+                        placeholder="Ex.: Joao da Silva, Municipio de Belo Horizonte, Banco X",
+                        help="Busca o nome em campos publicos de partes, envolvidos e participantes.",
+                    )
+                )
+                cpf_cnpj = normalize_document_search_value(
+                    st.text_input(
+                        "CPF/CNPJ",
+                        key="cpf_cnpj_sidebar",
+                        placeholder="Ex.: 12345678900",
+                        help="Tenta conferir documento quando o tribunal expoe esse dado.",
+                    )
+                )
+                texto_livre = normalize_free_text_query(
+                    st.text_input(
+                        "Palavra-chave adicional",
+                        key="texto_livre_parte_sidebar",
+                        placeholder="Ex.: liminar, improbidade, execucao fiscal",
+                        help="Ajuda a restringir a busca por parte a um contexto processual mais especifico.",
+                    )
+                )
+                with st.expander("Nota sobre CPF/CNPJ", expanded=False):
+                    st.caption(
+                        "O nome costuma ser o caminho mais consistente. O CPF/CNPJ depende do que o tribunal realmente expoe e indexa no endpoint publico."
+                    )
+            elif modo_busca_sidebar == "livre":
+                texto_livre = normalize_free_text_query(
+                    st.text_input(
+                        "Palavra-chave principal",
+                        key="texto_livre_sidebar",
+                        placeholder="Ex.: dano moral telefonia liminar, improbidade, cumprimento de sentenca",
+                        help="Busca ampla em campos publicos relevantes da capa e da movimentacao.",
+                    )
+                )
+                tema_consulta = normalize_assunto_filtro(
+                    st.text_input(
+                        "Tema exato",
+                        key="tema_livre_sidebar",
+                        placeholder="Ex.: consumidor, saude suplementar",
+                        help="Se quiser, combine a palavra-chave com um assunto exato do DataJud.",
+                    )
+                )
+            else:
+                tema_consulta = normalize_assunto_filtro(
+                    st.text_input(
+                        "Tema",
+                        key=tema_text_key,
+                        placeholder="Digite um tema para refinar a classe processual",
+                        help="Use para afunilar a classe por assunto.",
+                    )
+                )
+                if st.button(
+                    "Mostrar temas da classe",
+                    key="carregar_temas_codigo_sigla",
+                    use_container_width=True,
+                ):
+                    temas_da_consulta_atual = pd.DataFrame(columns=["assunto", "quantidade"])
+                    if current_query_can_seed_theme_suggestions(
+                        classe_codigo=classe_codigo,
+                        tribunal_sigla=tribunal_sigla_pre,
+                        estrutura_filtro=estrutura_filtro_pre,
+                        data_inicio=data_inicio if aplicar_periodo else None,
+                        data_fim=data_fim if aplicar_periodo else None,
+                    ):
+                        temas_da_consulta_atual = build_theme_suggestions_from_current_query()
+                    if not temas_da_consulta_atual.empty:
+                        st.session_state[tema_sugestoes_key] = temas_da_consulta_atual
+                        st.session_state[tema_sugestoes_status_key] = (
+                            f"Usei a consulta atual para montar {format_int_br(len(temas_da_consulta_atual))} sugestoes."
                         )
-                    except DataJudRequestError:
-                        tema_sugestoes_erro = (
-                            "Os temas sugeridos demoraram para carregar. "
-                            "Voce ainda pode digitar o tema."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    except Exception:
-                        tema_sugestoes_erro = (
-                            "A lista de temas nao ficou disponivel nesta tentativa."
-                        )
-                        st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
-                    else:
-                        st.session_state[tema_sugestoes_key] = tema_sugestoes_df
-                        if tema_sugestoes_df.empty:
-                            st.session_state[tema_sugestoes_status_key] = (
-                                "Nao encontrei temas sugeridos nesta amostra. "
+                        st.rerun()
+                    with st.spinner("Carregando temas sugeridos..."):
+                        try:
+                            tema_sugestoes_df = fetch_theme_suggestions_dataframe(
+                                api_key=api_key,
+                                classe_codigo=int(classe_codigo),
+                                url=build_url(tribunal_sigla_pre),
+                                tribunal_sigla=tribunal_sigla_pre,
+                                estrutura_filtro=estrutura_filtro_pre,
+                                data_inicio=data_inicio if aplicar_periodo else None,
+                                data_fim=data_fim if aplicar_periodo else None,
+                            )
+                        except DataJudRequestError:
+                            tema_sugestoes_erro = (
+                                "Os temas sugeridos demoraram para carregar. "
                                 "Voce ainda pode digitar o tema."
                             )
-                        else:
-                            st.session_state[tema_sugestoes_status_key] = (
-                                f"Lista carregada com {format_int_br(len(tema_sugestoes_df))} sugestoes."
+                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                        except Exception:
+                            tema_sugestoes_erro = (
+                                "A lista de temas nao ficou disponivel nesta tentativa."
                             )
-                        st.rerun()
-            if tema_sugestoes_status:
-                st.caption(tema_sugestoes_status)
-            else:
-                st.caption(
-                    "Se quiser ajuda, carregue temas sugeridos desta classe."
-                )
-            if tema_sugestoes:
-                busca_local = normalize_assunto_filtro(
-                    st.text_input(
-                        "Filtrar sugestoes de tema",
-                        key=tema_busca_key,
-                        placeholder="Filtre as sugestoes por palavra-chave",
-                    )
-                )
-                temas_filtrados = [
-                    tema for tema in tema_sugestoes
-                    if busca_local.lower() in tema.lower()
-                ] if busca_local else tema_sugestoes
-                tema_options = [""] + temas_filtrados
-                if tema_consulta and tema_consulta not in tema_options:
-                    tema_options.append(tema_consulta)
-                if st.session_state.get(tema_select_key) not in tema_options:
-                    st.session_state[tema_select_key] = (
-                        tema_consulta if tema_consulta in tema_options else ""
-                    )
-                st.selectbox(
-                    "Usar tema sugerido",
-                    options=tema_options,
-                    key=tema_select_key,
-                    format_func=lambda valor: "Nao usar sugestao" if not valor else valor,
-                    help="Escolha uma sugestao para preencher o campo Tema.",
-                    on_change=sync_tema_text_from_select,
-                )
-                if busca_local and not temas_filtrados:
-                    st.caption("Nenhum tema sugerido bateu com essa busca.")
+                            st.session_state[tema_sugestoes_status_key] = tema_sugestoes_erro
+                        else:
+                            st.session_state[tema_sugestoes_key] = tema_sugestoes_df
+                            if tema_sugestoes_df.empty:
+                                st.session_state[tema_sugestoes_status_key] = (
+                                    "Nao encontrei temas sugeridos nesta amostra. "
+                                    "Voce ainda pode digitar o tema."
+                                )
+                            else:
+                                st.session_state[tema_sugestoes_status_key] = (
+                                    f"Lista carregada com {format_int_br(len(tema_sugestoes_df))} sugestoes."
+                                )
+                            st.rerun()
+                if tema_sugestoes_status:
+                    st.caption(tema_sugestoes_status)
                 else:
                     st.caption(
-                        f"{format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
+                        "Se quiser ajuda, carregue temas sugeridos desta classe."
                     )
+                if tema_sugestoes:
+                    busca_local = normalize_assunto_filtro(
+                        st.text_input(
+                            "Filtrar sugestoes de tema",
+                            key=tema_busca_key,
+                            placeholder="Filtre as sugestoes por palavra-chave",
+                        )
+                    )
+                    temas_filtrados = [
+                        tema for tema in tema_sugestoes
+                        if busca_local.lower() in tema.lower()
+                    ] if busca_local else tema_sugestoes
+                    tema_options = [""] + temas_filtrados
+                    if tema_consulta and tema_consulta not in tema_options:
+                        tema_options.append(tema_consulta)
+                    if st.session_state.get(tema_select_key) not in tema_options:
+                        st.session_state[tema_select_key] = (
+                            tema_consulta if tema_consulta in tema_options else ""
+                        )
+                    st.selectbox(
+                        "Usar tema sugerido",
+                        options=tema_options,
+                        key=tema_select_key,
+                        format_func=lambda valor: "Nao usar sugestao" if not valor else valor,
+                        help="Escolha uma sugestao para preencher o campo Tema.",
+                        on_change=sync_tema_text_from_select,
+                    )
+                    if busca_local and not temas_filtrados:
+                        st.caption("Nenhum tema sugerido bateu com essa busca.")
+                    else:
+                        st.caption(
+                            f"{format_int_br(len(tema_sugestoes))} temas encontrados em ate {format_int_br(THEME_SUGGESTION_SAMPLE_SIZE)} registros."
+                        )
 
         st.divider()
 
-        # 2. TRIBUNAL & ESTRUTURA (AGORA LOGO ABAIXO DA PESQUISA)
-        st.markdown("**2. Tribunal & Estrutura**")
-        tribunal_sigla = st.text_input(
-            "Tribunal (sigla CNJ)",
-            value="tjmg",
-            key="tribunal_sigla_sidebar",
-            help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
-        ).strip().lower()
+        # 2. TRIBUNAL & ESTRUTURA
+        with st.expander("🏛️ 2. Tribunal & Estrutura", expanded=False):
+            tribunal_sigla = st.text_input(
+                "Tribunal (sigla CNJ)",
+                value="tjmg",
+                key="tribunal_sigla_sidebar",
+                help="Ex.: tjmg, tjmmg, trf1, trt3, stj, tst, tse, stm.",
+            ).strip().lower()
 
-        estrutura_info = get_estrutura_options(tribunal_sigla)
-        estrutura_filtro = st.selectbox(
-            "Recorte estrutural",
-            options=estrutura_info["opcoes"],
-            index=0,
-            key="estrutura_filtro_sidebar",
-            format_func=format_estrutura_option,
-            help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
-        )
-        with st.expander("Detalhe do recorte", expanded=False):
-            st.caption(describe_estrutura_option(estrutura_filtro))
-            st.caption(str(estrutura_info["observacao"]))
+            estrutura_info = get_estrutura_options(tribunal_sigla)
+            estrutura_filtro = st.selectbox(
+                "Recorte estrutural",
+                options=estrutura_info["opcoes"],
+                index=0,
+                key="estrutura_filtro_sidebar",
+                format_func=format_estrutura_option,
+                help="Use para separar a analise por grau, juizado, turma recursal ou estrutura equivalente.",
+            )
+            with st.expander("Detalhe do recorte", expanded=False):
+                st.caption(describe_estrutura_option(estrutura_filtro))
+                st.caption(str(estrutura_info["observacao"]))
 
         st.divider()
 
