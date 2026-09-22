@@ -782,26 +782,51 @@ LEGAL_AREAS_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
-def render_acoes_por_area_selector() -> None:
+def render_acoes_por_area_selector(key_prefix: str = "main") -> None:
     st.markdown("**📂 Ações e Classes mais Comuns por Área do Direito**")
-    st.caption("Escolha o ramo jurídico para aplicar instantaneamente o código CNJ da ação desejada:")
-    
-    selected_area_key = st.selectbox(
-        "Área do Direito:",
-        options=list(LEGAL_AREAS_CATALOG.keys()),
-        format_func=lambda k: f"{LEGAL_AREAS_CATALOG[k]['icone']} {LEGAL_AREAS_CATALOG[k]['nome']}",
-        key="selected_legal_area_key",
-    )
-    
-    area_info = LEGAL_AREAS_CATALOG[selected_area_key]
+    st.caption("Clique no ramo jurídico para ver as ações mais populares e selecionar com 1 clique:")
+
+    area_keys = list(LEGAL_AREAS_CATALOG.keys())
+    current_area_session_key = f"{key_prefix}_active_legal_area"
+    if current_area_session_key not in st.session_state:
+        st.session_state[current_area_session_key] = "penal"
+
+    # Renderiza botões em grade para os ramos jurídicos
+    area_cols = st.columns(min(len(area_keys), 5))
+    for i, area_key in enumerate(area_keys):
+        col = area_cols[i % 5]
+        area_meta = LEGAL_AREAS_CATALOG[area_key]
+        is_selected = (st.session_state[current_area_session_key] == area_key)
+        label = f"{area_meta['icone']} {area_meta['nome'].split(' ')[0]}"
+        if col.button(
+            label,
+            key=f"{key_prefix}_area_btn_{area_key}",
+            type="primary" if is_selected else "secondary",
+            use_container_width=True,
+            help=area_meta['nome'],
+        ):
+            st.session_state[current_area_session_key] = area_key
+            st.rerun()
+
+    active_key = st.session_state[current_area_session_key]
+    area_info = LEGAL_AREAS_CATALOG[active_key]
+
+    st.markdown(f"#### {area_info['icone']} {area_info['nome']}")
     st.caption(f"ℹ️ *{area_info['descricao']}*")
-    
+
+    # Renderiza as ações mais comuns em grade de 2 colunas
+    action_cols = st.columns(2)
     for idx, (codigo_cnj, nome_acao) in enumerate(area_info["acoes"]):
-        btn_label = f"`{codigo_cnj}` - {nome_acao}"
-        if st.button(btn_label, key=f"btn_area_{selected_area_key}_{codigo_cnj}_{idx}", use_container_width=True):
+        a_col = action_cols[idx % 2]
+        btn_label = f"📌 `{codigo_cnj}` - {nome_acao}"
+        if a_col.button(
+            btn_label,
+            key=f"{key_prefix}_action_btn_{active_key}_{codigo_cnj}_{idx}",
+            use_container_width=True,
+        ):
             st.session_state["classe_codigo_sidebar"] = int(codigo_cnj)
             st.session_state["modo_busca_sidebar"] = "classe"
-            st.toast(f"✅ Classe CNJ {codigo_cnj} ({nome_acao}) selecionada!")
+            st.toast(f"✅ Classe CNJ {codigo_cnj} ({nome_acao}) selecionada no modo de busca!")
             st.rerun()
 
 
@@ -7210,6 +7235,10 @@ def render() -> None:
     )
     api_key = resolve_api_key()
 
+    # BOTÃO / PAINEL SUPERIOR DA TELA INICIAL (FORA DA BARRA LATERAL)
+    with st.expander("📂 **Buscar Ações por Área do Direito** (Penal, Cível, Consumidor, Trabalhista, Tributário, Família...)", expanded=False):
+        render_acoes_por_area_selector(key_prefix="top_main")
+
     with st.sidebar:
         # 1. PESQUISA (PRIMEIRA SEÇÃO DA BARRA LATERAL)
         st.markdown("**1. Pesquisa**")
@@ -7245,7 +7274,7 @@ def render() -> None:
                 )
             )
             with st.expander("📂 Ações por Área (Penal, Cível, Consumidor...)", expanded=False):
-                render_acoes_por_area_selector()
+                render_acoes_por_area_selector(key_prefix="sidebar")
             with st.expander("Codigos sugeridos", expanded=False):
                 render_codigo_sugestoes(tribunal_sigla_pre)
 
