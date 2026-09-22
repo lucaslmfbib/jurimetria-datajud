@@ -1078,68 +1078,86 @@ def render_fluxo_simplificado_busca() -> None:
 
     st.markdown("---")
 
-    # 3. FILTRO DE TEMPO E VELOCIDADE DA CONSULTA
-    st.markdown("**Filtro por período de ajuizamento & Velocidade da consulta**")
+    # 3. FILTRO DE TEMPO E TAMANHO DA AMOSTRAGEM
+    st.markdown("**Filtro por período de ajuizamento (Ano)**")
     
-    col_tempo_preset, col_speed_preset = st.columns([3, 2])
-    
-    with col_tempo_preset:
-        time_presets = [
-            ("todos", "🗓️ Todo o período"),
-            ("2026", "📅 2026"),
-            ("2025_2026", "📅 2025-2026"),
-            ("ultimos_3_anos", "📅 Últimos 3 Anos"),
-            ("ultimos_5_anos", "📅 Últimos 5 Anos"),
-        ]
-        active_time_preset = st.session_state.get("active_time_preset", "todos")
-        t_cols = st.columns(len(time_presets))
-        hoje = date.today()
-        for idx, (p_code, p_label) in enumerate(time_presets):
-            t_col = t_cols[idx]
-            is_t_active = (active_time_preset == p_code)
-            if t_col.button(
-                p_label,
-                key=f"time_preset_btn_{p_code}_{idx}",
-                type="primary" if is_t_active else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["active_time_preset"] = p_code
-                if p_code == "todos":
-                    st.session_state["aplicar_periodo_sidebar"] = False
-                elif p_code == "2026":
-                    st.session_state["data_inicio_sidebar"] = date(2026, 1, 1)
-                    st.session_state["data_fim_sidebar"] = hoje
-                    st.session_state["aplicar_periodo_sidebar"] = True
-                elif p_code == "2025_2026":
-                    st.session_state["data_inicio_sidebar"] = date(2025, 1, 1)
-                    st.session_state["data_fim_sidebar"] = hoje
-                    st.session_state["aplicar_periodo_sidebar"] = True
-                elif p_code == "ultimos_3_anos":
-                    st.session_state["data_inicio_sidebar"] = date(hoje.year - 3, 1, 1)
-                    st.session_state["data_fim_sidebar"] = hoje
-                    st.session_state["aplicar_periodo_sidebar"] = True
-                elif p_code == "ultimos_5_anos":
-                    st.session_state["data_inicio_sidebar"] = date(hoje.year - 5, 1, 1)
-                    st.session_state["data_fim_sidebar"] = hoje
-                    st.session_state["aplicar_periodo_sidebar"] = True
-                st.session_state["trigger_execute_search"] = True
-                st.rerun()
-
-    with col_speed_preset:
-        sample_size_options = [150, 300, 700]
-        current_sample_size = int(st.session_state.get("sample_size_sidebar", 150) or 150)
-        chosen_sample_size = st.radio(
-            "Velocidade:",
-            options=sample_size_options,
-            index=sample_size_options.index(current_sample_size) if current_sample_size in sample_size_options else 0,
-            format_func=lambda s: f"⚡ Rápido ({s} casos)" if s == 150 else (f"📊 Padrão ({s} casos)" if s == 300 else f"🔍 Completo ({s} casos)"),
-            horizontal=True,
-            key="sample_size_radio_top",
-        )
-        if chosen_sample_size != current_sample_size:
-            st.session_state["sample_size_sidebar"] = chosen_sample_size
+    time_presets = [
+        ("todos", "🗓️ Todo o período"),
+        ("2026", "📅 2026"),
+        ("2025", "📅 2025"),
+        ("2024", "📅 2024"),
+        ("2023", "📅 2023"),
+        ("2022", "📅 2022"),
+        ("2021", "📅 2021"),
+        ("ultimos_5_anos", "📅 Últimos 5 Anos"),
+        ("ultimos_10_anos", "📅 Últimos 10 Anos"),
+    ]
+    active_time_preset = st.session_state.get("active_time_preset", "todos")
+    t_cols = st.columns(len(time_presets))
+    hoje = date.today()
+    for idx, (p_code, p_label) in enumerate(time_presets):
+        t_col = t_cols[idx]
+        is_t_active = (active_time_preset == p_code)
+        if t_col.button(
+            p_label,
+            key=f"time_preset_btn_{p_code}_{idx}",
+            type="primary" if is_t_active else "secondary",
+            use_container_width=True,
+            help=f"Filtrar por período: {p_label}",
+        ):
+            st.session_state["active_time_preset"] = p_code
+            if p_code == "todos":
+                st.session_state["aplicar_periodo_sidebar"] = False
+            elif p_code == "2026":
+                st.session_state["data_inicio_sidebar"] = date(2026, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2026, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "2025":
+                st.session_state["data_inicio_sidebar"] = date(2025, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2025, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "2024":
+                st.session_state["data_inicio_sidebar"] = date(2024, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2024, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "2023":
+                st.session_state["data_inicio_sidebar"] = date(2023, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2023, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "2022":
+                st.session_state["data_inicio_sidebar"] = date(2022, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2022, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "2021":
+                st.session_state["data_inicio_sidebar"] = date(2021, 1, 1)
+                st.session_state["data_fim_sidebar"] = date(2021, 12, 31)
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "ultimos_5_anos":
+                st.session_state["data_inicio_sidebar"] = date(hoje.year - 5, 1, 1)
+                st.session_state["data_fim_sidebar"] = hoje
+                st.session_state["aplicar_periodo_sidebar"] = True
+            elif p_code == "ultimos_10_anos":
+                st.session_state["data_inicio_sidebar"] = date(hoje.year - 10, 1, 1)
+                st.session_state["data_fim_sidebar"] = hoje
+                st.session_state["aplicar_periodo_sidebar"] = True
             st.session_state["trigger_execute_search"] = True
             st.rerun()
+
+    st.markdown("**Tamanho da Amostragem (Volume de Processos)**")
+    sample_size_options = [700, 2000, 10000, 20000]
+    current_sample_size = int(st.session_state.get("sample_size_sidebar", 700) or 700)
+    chosen_sample_size = st.radio(
+        "Selecione a profundidade da consulta:",
+        options=sample_size_options,
+        index=sample_size_options.index(current_sample_size) if current_sample_size in sample_size_options else 0,
+        format_func=lambda s: f"⚡ Rápido ({s} casos)" if s == 700 else (f"📊 Padrão (2.000 casos)" if s == 2000 else (f"🔍 Amplo (10.000 casos)" if s == 10000 else f"🚀 Ultra Completo (20.000 casos)")),
+        horizontal=True,
+        key="sample_size_radio_top",
+    )
+    if chosen_sample_size != current_sample_size:
+        st.session_state["sample_size_sidebar"] = chosen_sample_size
+        st.session_state["trigger_execute_search"] = True
+        st.rerun()
 
     st.markdown("---")
 
@@ -7244,18 +7262,18 @@ def render() -> None:
             color: #FFFFFF !important;
         }
         div[data-testid="stButton"] > button[kind="primary"] {
-            background: linear-gradient(135deg, #D4AF37 0%, #F59E0B 100%) !important;
-            color: #0F2C59 !important;
-            border: 2px solid #B48811 !important;
-            box-shadow: 0 6px 16px rgba(212, 175, 55, 0.4) !important;
+            background: linear-gradient(135deg, #FF4B4B 0%, #D32F2F 100%) !important;
+            color: #FFFFFF !important;
+            border: 1.5px solid #B71C1C !important;
+            box-shadow: 0 6px 16px rgba(255, 75, 75, 0.4) !important;
         }
         div[data-testid="stButton"] > button[kind="primary"] * {
-            color: #0F2C59 !important;
+            color: #FFFFFF !important;
             font-weight: 800 !important;
         }
         div[data-testid="stButton"] > button[kind="primary"]:hover {
-            background: linear-gradient(135deg, #F59E0B 0%, #D4AF37 100%) !important;
-            color: #0F2C59 !important;
+            background: linear-gradient(135deg, #E53935 0%, #B71C1C 100%) !important;
+            color: #FFFFFF !important;
         }
         .author-card {
             margin: 0.8rem 0 1rem;
